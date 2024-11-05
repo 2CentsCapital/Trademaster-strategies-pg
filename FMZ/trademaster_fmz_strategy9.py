@@ -1,18 +1,23 @@
 import pandas as pd
 import numpy as np
-from backtesting import Backtest, Strategy
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import pandas_ta as ta
-from backtesting.lib import crossover
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023_2024.csv'
 
-# Function to calculate indicators on the daily timeframe
+
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
 def load_data(csv_file_path):
     try:
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -20,51 +25,107 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
+       
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
-# Strategy Class
+
+# Function to calculate indicators on the daily timeframe
+def calculate_daily_indicators(daily_data, ema_length=9, sma30_length=30, sma50_length=50, sma200_length=200, sma325_length=325):
+    try:
+     
+        # Calculate EMA and SMAs
+        daily_data['ema'] = ta.ema(daily_data['Close'], length=ema_length)
+        daily_data['sma30'] = ta.sma(daily_data['Close'], length=sma30_length)
+        daily_data['sma50'] = ta.sma(daily_data['Close'], length=sma50_length)
+        daily_data['sma200'] = ta.sma(daily_data['Close'], length=sma200_length)
+        daily_data['sma325'] = ta.sma(daily_data['Close'], length=sma325_length)
+
+        print("Daily indicator calculation complete")
+        return daily_data
+    except Exception as e:
+        print(f"Error in calculate_daily_indicators: {e}")
+        raise
+
+# Function to generate buy/sell signals based on the strategy logic
+def generate_signals(daily_data):
+    try:
+        print("Generating signals based on strategy logic")
+
+        # Initialize the 'signal' column
+        daily_data['signal'] = 0
+
+        # Loop through each row in the DataFrame, starting from index 1
+        for i in range(1, len(daily_data)):
+            # Access values directly using iloc
+            prev_ema = daily_data.iloc[i - 1]['ema']
+            prev_sma30 = daily_data.iloc[i - 1]['sma30']
+            current_ema = daily_data.iloc[i]['ema']
+            current_sma30 = daily_data.iloc[i]['sma30']
+            prev_sma50 = daily_data.iloc[i - 1]['sma50']
+            current_sma50 = daily_data.iloc[i]['sma50']
+
+            # Buy Signal Condition
+            buy_signal = (prev_ema < prev_sma30) and (current_ema > current_sma30)
+
+            # Sell Signal Condition
+            sell_signal = (prev_sma30 < prev_ema and current_sma30 > current_ema) or \
+                          (prev_sma50 < prev_ema and current_sma50 > current_ema)
+
+            # Assign signals based on conditions
+            if buy_signal:
+                daily_data.loc[daily_data.index[i], 'signal'] = 1
+            elif sell_signal:
+                daily_data.loc[daily_data.index[i], 'signal'] = -1
+            # No action is taken if neither condition is met (signal remains 0)
+
+        print("Signal generation complete")
+        return daily_data
+
+    except Exception as e:
+        print(f"Error in generate_signals: {e}")
+        raise
+
+
+
+# Define the strategy class
 class EMASMACrossoverStrategy(Strategy):
     def init(self):
-        # Calculate EMA and SMAs
-        close = pd.Series(self.data.Close)
-        self.ema = self.I(ta.ema, close, 9)
-        self.sma30 = self.I(ta.sma, close, 30)
-        self.sma50 = self.I(ta.sma, close, 50)
-        self.sma200 = self.I(ta.sma, close, 200)
-        self.sma325 = self.I(ta.sma, close, 325)
+        try:
+            print("Initializing strategy")
+ 
+            print("Strategy initialization complete")
+        except Exception as e:
+            print(f"Error in init method: {e}")
+            raise
 
     def next(self):
-        # Previous and current values for EMA and SMAs
-        prev_ema = self.ema[-2]
-        prev_sma30 = self.sma30[-2]
-        current_ema = self.ema[-1]
-        current_sma30 = self.sma30[-1]
-        prev_sma50 = self.sma50[-2]
-        current_sma50 = self.sma50[-1]
+        try:
+            # print(f"Processing bar: {self.data.index[-1]} with signal {self.data.signal[-1]} at price {self.data.Close[-1]}")
+            # Check for signals and execute trades based on signal value
+            if self.data.signal[-1] == 1:
+                print(f"Buy signal detected, close={self.data.Close[-1]}")
+                self.buy()
 
-        # Buy Signal Condition: EMA crosses above SMA30
-        buy_signal = (prev_ema < prev_sma30) and (current_ema > current_sma30)
+            elif self.data.signal[-1] == -1 :
+                print(f"Sell signal detected, close={self.data.Close[-1]}")
+                self.position().close()
 
-        # Sell Signal Condition: EMA crosses below SMA30 or SMA50
-        sell_signal = (prev_sma30 < prev_ema and current_sma30 > current_ema) or \
-                      (prev_sma50 < prev_ema and current_sma50 > current_ema)
+      
+        except Exception as e:
+            print(f"Error in next method: {e}")
+            raise
 
-        # Execute buy or sell based on signals
-        if buy_signal:
-            self.buy()
 
-        elif sell_signal:
-            self.position.close()
 
 
 
 data = load_data(data_path)
-
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data, EMASMACrossoverStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
-
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)

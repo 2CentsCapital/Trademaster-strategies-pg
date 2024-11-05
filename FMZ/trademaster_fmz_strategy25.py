@@ -1,24 +1,32 @@
 import pandas as pd
 import pandas as pd
 import numpy as np
-from backtesting import Strategy, Backtest
 import pandas_ta as ta
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
 import logging
-from backtesting import Backtest, Strategy
-from backtesting.lib import crossover
+
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi/1.STATISTICAL_BASED/0.DATA/BTCUSDT/future/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
+
+
+
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
 
 def load_data(csv_file_path):
     try:
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -26,132 +34,134 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
+       
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
+
+
+def calculate_daily_indicators(daily_data):
+    # RSI Calculation
+    rsiLength = 14
+    src = daily_data['Close']
+    
+    # Calculate change
+    change = src.diff()
+
+    # Calculate up and down components
+    up = ta.rma(change.clip(lower=0), length=rsiLength)
+    down = ta.rma(-change.clip(upper=0), length=rsiLength)
+
+    # Compute RSI based on the Pine Script logic
+    daily_data['RSI'] = 100 - 100 / (1 + up / down)
+    daily_data['RSI'] = daily_data['RSI'].fillna(0)
+
+    # Bollinger Bands Calculation
+    bbLength = 20
+    bbMultiplier = 1.0
+    
+    # Calculate the basis (SMA) and deviation (standard deviation)
+    basis = ta.sma(src, length=bbLength)
+    deviation = bbMultiplier * ta.stdev(src, length=bbLength)
+    
+    # Calculate upper and lower bands
+    daily_data['UpperBand'] = basis + deviation
+    daily_data['LowerBand'] = basis - deviation
+
+    return daily_data
+
+
+def generate_signals(daily_data, dca_enabled=False, dca_interval=1):
+    # Strategy Parameters
+    RSILowerLevel = 42
+    RSIUpperLevel = 70
+
+    # Initialize the signal column with 0 (no action)
+    daily_data['signal'] = 0
+
+    # Loop through each row in the DataFrame
+    for i in range(1, len(daily_data)):
+        # Define the BBBuyTrigger and BBSellTrigger based on Bollinger Bands
+        BBBuyTrigger = daily_data['Close'].iloc[i] < daily_data['LowerBand'].iloc[i]
+        BBSellTrigger = daily_data['Close'].iloc[i] > daily_data['UpperBand'].iloc[i]
+
+        # Define the RSI Guards
+        rsiBuyGuard = daily_data['RSI'].iloc[i] > RSILowerLevel
+        rsiSellGuard = daily_data['RSI'].iloc[i] > RSIUpperLevel
+
+        # Combine conditions to form buy and sell conditions
+        buy_condition = BBBuyTrigger and rsiBuyGuard
+        sell_condition = BBSellTrigger and rsiSellGuard
+
+        # Determine the current hour (assuming the index is a datetime index)
+        current_hour = daily_data.index[i].hour
+
+        # Apply the DCA Logic if enabled
+        if dca_enabled and (current_hour % dca_interval == 0):
+            if buy_condition:
+                daily_data.at[daily_data.index[i], 'signal'] = 1  # DCA Buy Signal
+                print("DCA - Buy Signal!")  # Replace with logging or another action
+        else:
+            if buy_condition:
+                daily_data.at[daily_data.index[i], 'signal'] = 1  # Regular Buy Signal
+                print("Buy Signal!")  # Replace with logging or another action
+
+        # Handle Sell Condition
+        if sell_condition:
+            daily_data.at[daily_data.index[i], 'signal'] = -1  # Sell Signal
+            print("Sell Signal!")  # Replace with logging or another action
+
+    return daily_data
+
+
+
 
 
 
 class DCA_Trading_Strategy(Strategy):
-    # Strategy Parameters
-    stoploss_input = 0.06604  # 6.604% Stop Loss
-    takeprofit_input = 0.02328  # 2.328% Take Profit
-    dca_enabled = False  # Toggle DCA
-    dca_interval = 1  # Interval in hours for DCA (if enabled)
-    RSILowerLevel = 42
-    RSIUpperLevel = 70
-    rsi_length = 14
-    bb_length = 20
-    bb_multiplier = 1.0
-    dca_amount = 0.1  # Fraction of the initial position to add in DCA
-
+    stoploss_input = 0.06604
+    takeprofit_input = 0.02328
+ 
     def init(self):
-    
-            # Calculate RSI
-            self.rsi = self.I(
-                lambda close: ta.rsi(pd.Series(close), length=self.rsi_length).fillna(0).values,
-                self.data.Close
-            )
-
-            # Calculate Bollinger Bands
-            self.basis = self.I(
-                lambda close: ta.sma(pd.Series(close), length=self.bb_length).fillna(0).values,
-                self.data.Close
-            )
-            self.upper_band = self.I(
-                lambda close: (self.basis + self.bb_multiplier * ta.stdev(pd.Series(close), length=self.bb_length)).fillna(0).values,
-                self.data.Close
-            )
-            self.lower_band = self.I(
-                lambda close: (self.basis - self.bb_multiplier * ta.stdev(pd.Series(close), length=self.bb_length)).fillna(0).values,
-                self.data.Close
-            )
-
-            # Initialize position-related variables
+        try:
+            print("Initializing strategy")
+          
             self.entry_price = None
-            self.long_profit_target = None
-            self.short_profit_target = None
-            self.dca_counter = 0  # Counter for DCA intervals
-
-      
+            print("Strategy initialization complete")
+        except Exception as e:
+            print(f"Error in init method: {e}")
+            raise
 
     def next(self):
-  
-            # Current and previous close prices
-            current_close = self.data.Close[-1]
-            previous_close = self.data.Close[-2]
+        try:
+            current_signal = self.data.signal[-1]
+            current_price = self.data.Close[-1]
 
-            # Current and previous indicator values
-            current_rsi = self.rsi[-1]
-            previous_rsi = self.rsi[-2]
-            current_upper_band = self.upper_band[-1]
-            previous_upper_band = self.upper_band[-2]
-            current_lower_band = self.lower_band[-1]
-            previous_lower_band = self.lower_band[-2]
 
-            # Generate Buy/Sell signals based on RSI and Bollinger Bands
-            buy_signal = (
-                (previous_close <= previous_lower_band) and
-                (current_close > current_lower_band) and
-                (current_rsi > self.RSILowerLevel)
-            )
+            # Handle buy signal
+            if current_signal==1:
+                print(f"Buy signal detected, executing long at close={current_price}")
+                self.entry_price = current_price
+                self.buy()  # DCA or regular long position based on dca_enabled
 
-            sell_signal = (
-                (previous_close >= previous_upper_band) and
-                (current_close < current_upper_band) and
-                (current_rsi > self.RSIUpperLevel)
-            )
-
-            # Get the current hour for DCA logic
-            current_hour = self.data.index[-1].hour
-
-            # Handle Buy Signal
-            if buy_signal:
-               
-                self.entry_price = current_close
-                self.buy()  # Enter long position
-                self.long_profit_target = current_close * (1 + self.takeprofit_input)
-                self.short_profit_target = current_close * (1 - self.stoploss_input)
-
-            # Handle Sell Signal
-            if sell_signal:
-             
-                if self.position.is_long:
-                    # Calculate SL and TP based on entry price
+            if current_signal==-1:
+                    # Handle stop loss and take profit
+                if self.position().is_long:
                     stop_loss_level = self.entry_price * (1 - self.stoploss_input)
                     take_profit_level = self.entry_price * (1 + self.takeprofit_input)
-                    self.sell()  # Exit long position
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
-            # Handle DCA Logic (if enabled)
-            if self.dca_enabled and self.position.is_long:
-                # Increment DCA counter
-                self.dca_counter += 1
-                if self.dca_counter >= self.dca_interval:
-                   
-                    self.buy(size=self.position.size * self.dca_amount)  # Add to existing position
-                    self.dca_counter = 0  # Reset counter
-
-            # Manage Take Profit and Stop Loss
-            if self.position.is_long and self.entry_price:
-                if current_close >= self.long_profit_target:
-                  
-                    self.sell()  # Exit long position
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
-                elif current_close <= self.short_profit_target:
-                   
-                    self.sell()  # Exit long position
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
+                    if current_price < stop_loss_level or current_price > take_profit_level:
+                        print(f"Price reached stop loss or take profit level. Closing position.")
+                        self.position().close()
             
+
+            print("Next method processing complete")
+
+        except Exception as e:
+            print(f"Error in next method: {e}")
+            raise
+
+
 
 
 
@@ -183,10 +193,14 @@ def load_data(csv_file_path):
 
 
 
-data = load_data(data_path)
 
+
+
+data = load_data(data_path)
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data, DCA_Trading_Strategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)

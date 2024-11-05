@@ -1,18 +1,23 @@
 import pandas as pd
 import pandas_ta as ta
-from backtesting import Backtest, Strategy
-import logging
-import coloredlogs
-import numpy as np
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi/1.STATISTICAL_BASED/0.DATA/BTCUSDT/future/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 
-# 2. Indicator Calculation
+import numpy as np
+
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
+
 
 def load_data(csv_file_path):
     try:
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -20,140 +25,132 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
+       
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
-# Strategy Class
+
+# 2. Indicator Calculation
+def calculate_daily_indicators(daily_data, rsi_period=7, ema_period=50, atr_length=14):
+    try:
+        print("Calculating indicators")
+
+      
+
+          # Calculate RSI excluding the latest close at each index
+        daily_data['RSI'] = ta.rsi(daily_data['Close'].shift(1), length=rsi_period)
+        
+        
+        # Calculate EMA for the entire series
+        daily_data['EMA'] = ta.ema(daily_data['Close'], length=ema_period)
+        
+        # Calculate ATR for the entire series
+        daily_data['ATR'] = ta.atr(daily_data['High'], daily_data['Low'], daily_data['Close'], length=atr_length)
+        
+        daily_data.dropna(inplace=True)
+        print(f"Indicator calculation complete\n{daily_data.head(20)}")
+        return daily_data
+    except Exception as e:
+        print(f"Error in calculate_indicators: {e}")
+        raise
+
+
+
+
+def generate_signals(data):
+    try:
+        print("Generating trading signals")
+
+        # Initialize signals
+        data['signal'] = 0
+
+        # Loop through the data to apply conditions
+        for i in range(1, len(data)):
+            # Define buyFlag and sellFlag
+            buyFlag = data['EMA'].iloc[i] > data['Close'].iloc[i]
+            sellFlag = data['EMA'].iloc[i] < data['Close'].iloc[i]
+            
+            # Define green and red candles
+            green_candle = data['Close'].iloc[i] > data['Close'].iloc[i-1]
+            red_candle = data['Close'].iloc[i] < data['Close'].iloc[i-1]
+
+            # Define RSI conditions for buying and selling
+            buyRsiFlag = data['RSI'].iloc[i] < 20
+            sellRsiFlag = data['RSI'].iloc[i] > 80
+
+            # Buy signal: EMA > Close, RSI < 20, green candle, and no open trades
+            if buyFlag and buyRsiFlag and green_candle:
+                data['signal'].iloc[i] = 1  # Long entry signal
+            
+            # Sell signal: EMA < Close, RSI > 80, red candle, and no open trades
+            elif sellFlag and sellRsiFlag and red_candle:
+                data['signal'].iloc[i] = -1  # Short entry signal
+        
+        print(f"Signal generation complete\n{data.head(20)}")
+        return data
+
+    except Exception as e:
+        print(f"Error in generate_signals: {e}")
+        raise
+
+# Define the Trading Strategy
 class EMARSI_Cross(Strategy):
-    rsi_period = 7
-    ema_period = 50
-    atr_length = 14
-
+    
     def init(self):
-        # Access data
-        self.close = self.data.Close
-        self.open = self.data.Open
-        self.high = self.data.High
-        self.low = self.data.Low
-
-        # Calculate indicators
-        # Shift close prices by 1 for RSI calculation as in your original code
-        shifted_close = pd.Series(self.close).shift(1)
-
-        # Calculate RSI
-        self.rsi = self.I(ta.rsi, shifted_close, length=self.rsi_period)
-
-        # Calculate EMA
-        self.ema = self.I(ta.ema, pd.Series(self.data.Close), length=self.ema_period)
-
-        # Calculate ATR
-        self.atr = self.I(ta.atr, pd.Series(self.data.High), pd.Series(self.data.Low), pd.Series(self.data.Close), length=self.atr_length)
-
-
+        print("Initializing strategy")
+      
     def next(self):
-        # Get the current index
-        i = len(self.data) - 1
+        atr_value = self.data.ATR[-1]  # ATR value at the current candle
+        candle_body = abs(self.data.Close[-1] - self.data.Open[-1])  # Calculate the candle body size
 
-        # Ensure we have enough data
-        if i < 1:
-            return
-
-        # Current and previous prices
-        current_close = self.close[-1]
-        previous_close = self.close[-2]
-
-        current_open = self.open[-1]
-
-        # Indicator values
-        current_ema = self.ema[-1]
-        current_rsi = self.rsi[-1]
-        current_atr = self.atr[-1]
-
-        # Check if indicators are valid (not NaN)
-        if np.isnan(current_ema) or np.isnan(current_rsi) or np.isnan(current_atr):
-            return  # Skip this iteration
-
-        # Calculate candle body
-        candle_body = abs(current_close - current_open)
-
-        # Define buyFlag and sellFlag
-        buyFlag = current_ema > current_close
-        sellFlag = current_ema < current_close
-
-        # Define green and red candles
-        green_candle = current_close > previous_close
-        red_candle = current_close < previous_close
-
-        # Define RSI conditions for buying and selling
-        buyRsiFlag = current_rsi < 20
-        sellRsiFlag = current_rsi > 80
-
-        # Set reward to risk ratio
-        reward_to_risk_ratio = 1.2
+       
 
         # Long Trade Conditions
-        if buyFlag and buyRsiFlag and green_candle:
-            # Calculate stop loss distance based on ATR and candle body
-            slDist = current_atr + candle_body
-            if slDist <= 0 or np.isnan(slDist):
-                return  # Cannot proceed with invalid slDist
+        if self.data.signal[-1] == 1:
+                # Calculate stop loss distance based on ATR and candle body
+            slDist = atr_value + candle_body
             # Calculate stop loss and take profit levels
-            stop_loss = current_close - slDist  # Stop loss for long position
-            take_profit = current_close + (slDist * reward_to_risk_ratio)  # Take profit for long position
-
-            # Close existing short positions if any
-            if self.position.is_short:
-                self.position.close()
-
-            # Ensure that stop_loss < current_close < take_profit
-            if stop_loss >= current_close:
-                stop_loss = current_close - 0.0001  # Adjust to be less than current_close
-
+            stop_loss = self.data.Close[-1] - slDist  # Stop loss for long position
+            take_profit = self.data.Close[-1] + (1.2 * slDist)  # Take profit for long position
+            
+            print(f"Long Entry: Stop Loss = {stop_loss}, Take Profit = {take_profit}")
+            if self.position():
+                    if self.position().is_short:
+                        self.position().close()
+            
             # Execute the buy order with stop loss and take profit
+            # self.buy(sl=stop_loss, tp=take_profit)
             self.buy(stop=stop_loss, limit=take_profit)
 
         # Short Trade Conditions
-        elif sellFlag and sellRsiFlag and red_candle:
-            # Calculate stop loss distance based on ATR and candle body
-            slDist = current_atr + candle_body
-            if slDist <= 0 or np.isnan(slDist):
-                return  # Cannot proceed with invalid slDist
-
-            # Check for unrealistic slDist values
-            max_slDist = current_close * 0.1  # For example, limit slDist to 10% of current_close
-            if slDist > max_slDist:
-                slDist = max_slDist
-
+        elif self.data.signal[-1] == -1:
+             # Calculate stop loss distance based on ATR and candle body
+            slDist = atr_value + candle_body
             # Calculate stop loss and take profit levels
-            stop_loss = current_close + slDist  # Stop loss for short position
-            take_profit = current_close - (slDist * reward_to_risk_ratio)  # Take profit for short position
-
-            # Close existing long positions if any
-            if self.position.is_long:
-                self.position.close()
-
-            # Ensure that take_profit < current_close < stop_loss
-            if take_profit >= current_close:
-                take_profit = current_close - 0.0001  # Adjust to be less than current_close
-
-            if stop_loss <= current_close:
-                stop_loss = current_close + 0.0001  # Adjust to be greater than current_close
-
-            # Add validation to ensure correct ordering
-            if not (take_profit < current_close < stop_loss):
-                return  # Skip placing the order if the condition is not met
-
+            stop_loss = self.data.High[-1] + slDist  # Stop loss for short position
+            take_profit = self.data.High[-1] - (1.2 * slDist)  # Take profit for short position
+            
+            print(f"Short Entry: Stop Loss = {stop_loss}, Take Profit = {take_profit}")
+            if self.position():
+                    if self.position().is_long:
+                        self.position().close()
+            
             # Execute the sell order with stop loss and take profit
+            # self.sell(sl=stop_loss, tp=take_profit)
             self.sell(stop=stop_loss, limit=take_profit)
 
 
 
-data = load_data(data_path)
 
+
+
+data = load_data(data_path)
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data, EMARSI_Cross, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)

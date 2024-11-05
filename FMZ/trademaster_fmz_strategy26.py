@@ -1,17 +1,18 @@
 import pandas as pd
-from backtesting import Backtest, Strategy
-import pandas as pd
-from backtesting.lib import crossover, TrailingStrategy
 import numpy as np
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
 import logging
+import pandas_ta as ta
 
-logging.basicConfig(level=logging.INFO)
+
+
 
 def load_data(csv_file_path):
     try:
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        data['timestamp'] = pd.to_datetime(data['timestamp'])  # Ensure the timestamp is in datetime format
+        data.set_index('timestamp', inplace=True)  # Set the datetime column as index
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -21,117 +22,133 @@ def load_data(csv_file_path):
         }, inplace=True)
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
 
 
 
-class FukuizTradingStrategy(Strategy):
-    n1 = 24  # RSI Short period
-    n2 = 100  # RSI Long period
-    lbR = 5
-    lbL = 5
-    rangeUpper = 60
-    rangeLower = 5
-    plotBull = True
-    plotBear = True
 
-    def init(self):
-        self.rsi_short = self.I(self.rsi, self.data.Close, self.n1)
-        self.rsi_long = self.I(self.rsi, self.data.Close, self.n2)
-        self.signals = self.I(self.generate_signals)
-        self.entry_price = None
 
-    def ema(self, series, length):
-        alpha = 2 / (length + 1)
-        ema = np.zeros_like(series)
-        ema[0] = series[0]
-        for i in range(1, len(series)):
-            ema[i] = alpha * series[i] + (1 - alpha) * ema[i - 1]
-        return ema
 
-    def rma(self, series, length):
+
+def calculate_daily_indicators(daily_data):
+    def rma(series, length):
+        # Calculate the running moving average (RMA) of the series
         alpha = 1 / length
-        return self.ema(series, 2 * length - 1)  # Approximation of RMA using EMA
+        rma = series.ewm(alpha=alpha, adjust=False).mean()
+        return rma
 
-    def rsi(self, series, length):
-        delta = np.diff(series, prepend=series[0])
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
-        avg_gain = self.rma(gain, length)
-        avg_loss = self.rma(loss, length)
+    def rsi(series, length):
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = rma(gain, length)
+        avg_loss = rma(loss, length)
         rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
 
-    def generate_signals(self):
-        signals = np.zeros(len(self.data))
-        osc = self.rsi_short
-        osc_long = self.rsi_long
+    # Calculate RSI for short and long lengths
+    daily_data['RSI_Short'] = rsi(daily_data['Close'], 24)
+    daily_data['RSI_Long'] = rsi(daily_data['Close'], 100)
 
-        for i in range(self.lbR + self.lbL, len(self.data)):
-            osc_window = osc[i - self.lbL - self.lbR:i + 1]
+    logging.info(f"data after indicator calculation\n{daily_data}")
 
-            plFound = osc_window[self.lbL] == np.min(osc_window)
-            phFound = osc_window[self.lbL] == np.max(osc_window)
+    return daily_data
 
-            oscHL = osc_window[-self.lbR] > osc_window[-(self.lbR + self.lbL)]
-            priceLL = self.data.Low[i - self.lbR] < self.data.Low[i - (self.lbR + self.lbL)]
-            bullCond = self.plotBull and priceLL and oscHL and plFound
 
-            oscLH = osc_window[-self.lbR] < osc_window[-(self.lbR + self.lbL)]
-            priceHH = self.data.High[i - self.lbR] > self.data.High[i - (self.lbR + self.lbL)]
-            bearCond = self.plotBear and priceHH and oscLH and phFound
 
-            if bullCond:
-                signals[i] = 1
-            elif bearCond:
-                signals[i] = -1
+def generate_signals(daily_data, lbR=5, lbL=5, rangeUpper=60, rangeLower=5, plotBull=True, plotBear=True):
+    daily_data['signal'] = 0
+    osc = daily_data['RSI_Short']
+    osc_long = daily_data['RSI_Long']
+    
+    bullCond = osc > osc_long
+    bearCond = osc < osc_long
+    
+    # Generate Bullish and Bearish Conditions
+    for i in range(lbR + lbL, len(daily_data)):
+        window = daily_data.iloc[i - lbL - lbR:i + 1]
+        osc_window = window['RSI_Short']
+        
+        # Pivot detection
+        plFound = osc_window[lbL] == osc_window.min()
+        phFound = osc_window[lbL] == osc_window.max()
+        
+        oscHL = osc_window.iloc[-lbR] > osc_window.iloc[-(lbR + lbL)]
+        priceLL = daily_data['Low'].iloc[i - lbR] < daily_data['Low'].iloc[i - (lbR + lbL)]
+        bullCond_current = plotBull and priceLL and oscHL and plFound
+        
+        oscLH = osc_window.iloc[-lbR] < osc_window.iloc[-(lbR + lbL)]
+        priceHH = daily_data['High'].iloc[i - lbR] > daily_data['High'].iloc[i - (lbR + lbL)]
+        bearCond_current = plotBear and priceHH and oscLH and phFound
+        
+        if bullCond_current:
+            daily_data.at[daily_data.index[i], 'signal'] = 1
+        elif bearCond_current:
+            daily_data.at[daily_data.index[i], 'signal'] = -1
 
-        return signals
+
+    
+    logging.info(f"data after signal calculation\n{daily_data}")
+
+    return daily_data
+
+
+
+class Fukuiz_Trading_Strategy(Strategy):
+    def init(self):
+        try:
+            logging.info("Initializing Fukuiz Trading Strategy")
+            self.entry_price = None
+            logging.info("Initialization complete")
+        except Exception as e:
+            logging.error(f"Error in init method: {e}")
+            raise
 
     def next(self):
+      
         try:
-            current_signal = self.signals[-1]
+            current_signal = self.data.signal[-1]
             current_price = self.data.Close[-1]
+            # logging.debug(f"Processing bar: {self.data.index[-1]} with signal {current_signal} at price {current_price}")
 
-            if current_signal == 1:
-                logging.debug(f"Buy signal detected at close={current_price}")
+            # Handle buy signal
+            if current_signal==1:
+                logging.debug(f"Buy signal detected,  at close={current_price}")
                 self.entry_price = current_price
                 if self.position.is_short:
                     self.position.close()
-                self.buy()
+                self.buy()  
 
-            elif current_signal == -1:
-                logging.debug(f"Sell signal detected at close={current_price}")
+
+            
+                   # Handle buy signal
+            if current_signal==-1:
+                logging.debug(f"sell signal detected,g at close={current_price}")
                 self.entry_price = current_price
                 if self.position.is_long:
                     self.position.close()
-                self.sell()
+                self.buy() 
+
+
+            
+
+         
+            logging.info("Next method processing complete")
 
         except Exception as e:
             logging.error(f"Error in next method: {e}")
             raise
 
 
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
-try:
-    # Load and prepare data
-    data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi_strategy_backtest/0.DATA/BTCUSDT/spot/ohlc_data/2023_2024/btc_1h_data_2023_2024/btc_1h_data_2023_2024.csv'
-    minute_data = load_data(data_path)
-
-    # Run backtest
-    bt = Backtest(minute_data, FukuizTradingStrategy, cash=1000000, commission=.002)
-    stats = bt.run()
-    print(stats)
-    # Convert the trades to a DataFrame
-    trades = stats['_trades']  # Accessing the trades DataFrame from the stats object
-
-    # Save the trades to a CSV file
-    trades_csv_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi_strategy_backtest/1.STATISTICAL_AND_PROBABILITY_BASED/1.fmz_pinescript_strategies_backtest/Trademaster_fmz_30_strategies/tradebook/trades.csv'
-    trades.to_csv(trades_csv_path)
-
-    
-
-except Exception as e:
-    print(f"Error in main script execution: {e}")
+data = load_data(data_path)
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
+bt = Backtest(data, Fukuiz_Trading_Strategy, cash=1000000, commission=.002)
+stats = bt.run()
+print(stats)
+bt.plot(superimpose=False)

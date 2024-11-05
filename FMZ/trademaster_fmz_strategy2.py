@@ -1,18 +1,24 @@
 import pandas as pd
 import numpy as np
-from backtesting import Backtest, Strategy
-from backtesting.lib import crossover
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import pandas_ta as ta
 
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023_2024.csv'
+
 
 
 def load_data(csv_file_path):
     try:
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -20,10 +26,12 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
+       
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
+
 
 
 import pandas as pd
@@ -38,89 +46,115 @@ def load_data(csv_file_path):
     data.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
     return data
 
-# ComboStrategy class with indicator calculation in `init` and signal generation/position handling in `next`
+
+
+
+
+def calculate_daily_indicators(df):
+    # Calculate the required indicators
+    df['SMA01'] = ta.sma(df['Close'], length=3)
+    df['SMA02'] = ta.sma(df['Close'], length=8)
+    df['SMA03'] = ta.sma(df['Close'], length=10)
+    df['EMA01'] = ta.ema(df['Close'], length=5)
+    df['EMA02'] = ta.ema(df['Close'], length=3)
+    df['OHLC'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4.0
+
+    # Ensure no NaN values from indicator calculations
+    df.dropna(inplace=True)
+
+    return df
+
+def generate_signals(df):
+    # Initialize signal columns
+    df['signal'] = 0
+
+    # Entry01 conditions
+    df['Cond01'] = df['Close'] < df['SMA03']
+    df['Cond02'] = df['Close'] <= df['SMA01']
+    df['Cond03'] = df['Close'].shift(1) > df['SMA01'].shift(1)
+    df['Cond04'] = df['Open'] > df['EMA01']
+    df['Cond05'] = df['SMA02'] < df['SMA02'].shift(1)
+    
+    df['Entry01'] = df['Cond01'] & df['Cond02'] & df['Cond03'] & df['Cond04'] & df['Cond05']
+
+    # Entry02 conditions
+    df['Cond06'] = df['Close'] < df['EMA02']
+    df['Cond07'] = df['Open'] > df['OHLC']
+    df['Cond08'] = df['Volume'] <= df['Volume'].shift(1)
+
+    # Fixing Cond09
+    shifted_open = df['Open'].shift(1)
+    shifted_close = df['Close'].shift(1)
+    
+    df['Cond09'] = (df['Close'] < shifted_open.combine(shifted_close, min)) | (df['Close'] > shifted_open.combine(shifted_close, max))
+    
+    df['Entry02'] = df['Cond06'] & df['Cond07'] & df['Cond08'] & df['Cond09']
+
+    # Generate signals
+    df['buy_condition'] = (df['Entry01'] | df['Entry02']).astype(int)
+
+    # Update signal column where buy_condition is True (set to 1 for buy signal)
+    df.loc[df['buy_condition'] == 1, 'signal'] = 1
+
+    return df
+
+
 class ComboStrategy(Strategy):
     def init(self):
-        # Calculate indicators once during the initialization phase
-        close = pd.Series(self.data.Close)
-        open_ = pd.Series(self.data.Open)
-        volume = pd.Series(self.data.Volume)
-        high = pd.Series(self.data.High)
-        low = pd.Series(self.data.Low)
-
-        # Calculate SMAs, EMAs, and OHLC average
-        self.sma01 = self.I(ta.sma, close, 3)
-        self.sma02 = self.I(ta.sma, close, 8)
-        self.sma03 = self.I(ta.sma, close, 10)
-        self.ema01 = self.I(ta.ema, close, 5)
-        self.ema02 = self.I(ta.ema, close, 3)
-        self.ohlc = self.I(lambda o, h, l, c: (o + h + l + c) / 4, open_, high, low, close)
-
-        # Initialize variables for position tracking
-        self.BarsSinceEntry = 0
-        self.MaxProfitCount = 0
-        self.MaxBars = 10
-        self.position_avg_price = None
+        # Initialize variables
+        self.BarsSinceEntry = None
+        self.MaxProfitCount = 0  # Initialize MaxProfitCount as 0
+        self.MaxBars = 10  # Maximum bars to hold position
+        self.position_avg_price = None  # Track average price of the position
 
     def next(self):
-        # Fetch the latest values of indicators
-        current_close = self.data.Close[-1]
-        current_open = self.data.Open[-1]
-        prev_close = self.data.Close[-2]
-        current_volume = self.data.Volume[-1]
-        prev_volume = self.data.Volume[-2]
-
-        # Define conditions for signal generation based on indicators
-        cond01 = current_close < self.sma03[-1]
-        cond02 = current_close <= self.sma01[-1]
-        cond03 = prev_close > self.sma01[-2]
-        cond04 = current_open > self.ema01[-1]
-        cond05 = self.sma02[-1] < self.sma02[-2]
-
-        entry01 = cond01 and cond02 and cond03 and cond04 and cond05
-
-        cond06 = current_close < self.ema02[-1]
-        cond07 = current_open > self.ohlc[-1]
-        cond08 = current_volume <= prev_volume
-        shifted_open = self.data.Open[-2]
-        shifted_close = self.data.Close[-2]
-        cond09 = (current_close < min(shifted_open, shifted_close)) or (current_close > max(shifted_open, shifted_close))
-
-        entry02 = cond06 and cond07 and cond08 and cond09
-
-        # Set buy condition if either entry01 or entry02 is true
-        buy_condition = entry01 or entry02
+        # Initialize BarsSinceEntry if it's the first bar of the strategy
+        if self.BarsSinceEntry is None:
+            self.BarsSinceEntry = 0
 
         # Cond00: Check if no position is open
-        cond00 = self.position.size == 0
+        Cond00 = self.position.size == 0
 
-        # Update BarsSinceEntry and MaxProfitCount
-        if cond00:
+        # Update BarsSinceEntry
+        if Cond00:
             self.BarsSinceEntry = 0  # Reset BarsSinceEntry if no position
-            self.MaxProfitCount = 0  # Reset MaxProfitCount if no position
         else:
+            # Increment BarsSinceEntry if there is an open position
             self.BarsSinceEntry += 1
-            if current_close > self.position_avg_price and self.BarsSinceEntry > 1:
-                self.MaxProfitCount += 1  # Increment MaxProfitCount if profit condition is met
+
+          # Update BarsSinceEntry
+        if Cond00:
+             self.MaxProfitCount = 0  # Reset BarsSinceEntry if no position
+        else:
+              # If the current close price is greater than the average entry price and BarsSinceEntry > 1
+            if self.data.Close[-1] > self.position_avg_price and self.BarsSinceEntry > 1:
+                self.MaxProfitCount += 1  # Increment MaxProfitCount
+                print(f"MaxProfitCount incremented: {self.MaxProfitCount}")
+
+           
 
         # Check if we should enter a position based on signals
-        if buy_condition and cond00:
+        if self.data.signal[-1] == 1 and self.position.size == 0:
             self.buy(size=1)
-            self.position_avg_price = current_close  # Store the entry price
+            self.position_avg_price = self.data.Close[-1]  # Store the entry price
+           
 
         # Exit the position if BarsSinceEntry exceeds MaxBars or MaxProfitCount exceeds threshold
-        if (self.BarsSinceEntry >= self.MaxBars) or (self.MaxProfitCount >= 5):
+        if (self.BarsSinceEntry-1) >= self.MaxBars or self.MaxProfitCount >= 5:
             self.position.close()
+            print(f"Position closed at {self.data.Close[-1]}")
 
 
 
 
 
 data = load_data(data_path)
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data,ComboStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)
 
    
 

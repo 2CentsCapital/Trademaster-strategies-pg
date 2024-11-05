@@ -1,16 +1,24 @@
 import pandas as pd
 import numpy as np
-from backtesting import Strategy, Backtest
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import pandas_ta as ta
 
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi/1.STATISTICAL_BASED/0.DATA/BTCUSDT/future/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
+
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
+
 
 def load_data(csv_file_path):
     try:
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -18,139 +26,141 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
+       
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
-# Strategy Class
+
+
+
+def calculate_daily_indicators(daily_data):
+    try:
+        # Parameters
+        maLength = 50
+        lengthATR = 14
+        multiplier = 1.5
+        length = 20
+
+        # Calculate Simple Moving Average (SMA)
+        daily_data['ma'] = daily_data['Close'].rolling(window=maLength).mean()
+
+        # Calculate ATR using pandas_ta
+        daily_data['atr'] = ta.atr(daily_data['High'], daily_data['Low'], daily_data['Close'], length=lengthATR)
+
+        # Calculate Alpha Trend levels
+        daily_data['upperLevel'] = daily_data['Close'] + (multiplier * daily_data['atr'])
+        daily_data['lowerLevel'] = daily_data['Close'] - (multiplier * daily_data['atr'])
+
+        # Initialize Alpha Trend with NaN
+        daily_data['alphaTrend'] = np.nan
+
+ 
+        # Calculate Alpha Trend
+        for i in range(1, len(daily_data)):
+            current_close = daily_data['Close'].iloc[i]
+            current_upper = daily_data['upperLevel'].iloc[i]
+            current_lower = daily_data['lowerLevel'].iloc[i]
+            prev_alpha_trend = daily_data['alphaTrend'].iloc[i - 1]
+
+            if pd.isna(prev_alpha_trend):
+                daily_data.at[daily_data.index[i], 'alphaTrend'] = current_close
+            elif current_close > daily_data['lowerLevel'].iloc[i - 1]:
+                daily_data.at[daily_data.index[i], 'alphaTrend'] = max(prev_alpha_trend, current_lower)
+            elif current_close < daily_data['upperLevel'].iloc[i - 1]:
+                daily_data.at[daily_data.index[i], 'alphaTrend'] = min(prev_alpha_trend, current_upper)
+            else:
+                daily_data.at[daily_data.index[i], 'alphaTrend'] = prev_alpha_trend
+
+        # Calculate highest and lowest close over the specified window
+        daily_data['highestClose'] = daily_data['Close'].rolling(window=length).max()
+        daily_data['lowestClose'] = daily_data['Close'].rolling(window=length).min()
+
+        return daily_data
+
+    except Exception as e:
+        print(f"Error in calculate_daily_indicators: {e}")
+        raise
+
+
+def generate_signals(daily_data):
+    try:
+        # Initialize the 'signal' column with zeros
+        daily_data['signal'] = 0
+
+        # Loop through each row of the DataFrame
+        for i in range(1, len(daily_data)):
+            # Calculate the buy signal
+            if (daily_data['Close'].iloc[i] > daily_data['highestClose'].iloc[i-1] and
+                daily_data['Close'].iloc[i-1] <= daily_data['highestClose'].iloc[i-1] and
+                daily_data['Close'].iloc[i] > daily_data['ma'].iloc[i] and
+                daily_data['Close'].iloc[i] > daily_data['alphaTrend'].iloc[i]):
+                daily_data['signal'].iloc[i] = 1
+            
+            # Calculate the sell signal
+            elif (daily_data['Close'].iloc[i] < daily_data['lowestClose'].iloc[i-1] and
+                  daily_data['Close'].iloc[i-1] >= daily_data['lowestClose'].iloc[i-1] and
+                  daily_data['Close'].iloc[i] < daily_data['ma'].iloc[i] and
+                  daily_data['Close'].iloc[i] < daily_data['alphaTrend'].iloc[i]):
+                daily_data['signal'].iloc[i] = -1
+
+        return daily_data
+    
+    except Exception as e:
+        print(f"Error in generate_signals: {e}")
+        raise
+
+
 class TRMUSStrategy(Strategy):
-    # Strategy parameters
-    ma_length = 50
-    atr_length = 14
-    multiplier = 1.5
-    length = 20
     stop_loss_perc = 0.02
     take_profit_perc = 0.04
-    
+
     def init(self):
-        # Calculate Simple Moving Average (SMA)
-        self.ma = self.I(
-            lambda x: pd.Series(x).rolling(window=self.ma_length).mean().fillna(0).values,
-            self.data.Close
-        )
-        
-        # Calculate ATR using pandas_ta
-        self.atr = self.I(
-            lambda high, low, close: ta.atr(
-                pd.Series(high), pd.Series(low), pd.Series(close), length=self.atr_length
-            ).fillna(0).values,
-            self.data.High, self.data.Low, self.data.Close
-        )
-        
-        # Calculate Alpha Trend levels
-        self.upperLevel = self.I(
-            lambda close, atr: close + (self.multiplier * atr),
-            self.data.Close, self.atr
-        )
-        self.lowerLevel = self.I(
-            lambda close, atr: close - (self.multiplier * atr),
-            self.data.Close, self.atr
-        )
-        
-        # Calculate highest and lowest close over the specified window
-        self.highestClose = self.I(
-            lambda x: pd.Series(x).rolling(window=self.length).max().fillna(0).values,
-            self.data.Close
-        )
-        self.lowestClose = self.I(
-            lambda x: pd.Series(x).rolling(window=self.length).min().fillna(0).values,
-            self.data.Close
-        )
-        
-        # Initialize alphaTrend as a state variable
-        self.alpha_trend = np.nan
-        
+         print("Initializing strategy")
+
     def next(self):
-        # Current index
-        i = len(self.data) - 1
-        
-        # Ensure we have enough data
-        if i < self.ma_length + self.length - 1:
-            return
-        
-        # Current and previous prices
-        current_close = self.data.Close[-1]
-        previous_close = self.data.Close[-2]
-        
-        # Current indicator values
-        current_upper = self.upperLevel[-1]
-        current_lower = self.lowerLevel[-1]
-        current_highest_close = self.highestClose[-1]
-        current_lowest_close = self.lowestClose[-1]
-        current_ma = self.ma[-1]
-        current_atr = self.atr[-1]
-        
-        # Update alpha_trend
-        if np.isnan(self.alpha_trend):
-            self.alpha_trend = current_close
-        else:
-            # Previous upper and lower levels
-            previous_upper = self.upperLevel[-2]
-            previous_lower = self.lowerLevel[-2]
-            
-            if current_close > previous_lower:
-                self.alpha_trend = max(self.alpha_trend, current_lower)
-            elif current_close < previous_upper:
-                self.alpha_trend = min(self.alpha_trend, current_upper)
-            # Else, alpha_trend remains unchanged
-        
-        # Generate buy and sell signals
-        # Buy signal
-        buy_signal = (
-            (current_close > self.highestClose[-2]) and
-            (previous_close <= self.highestClose[-2]) and
-            (current_close > current_ma) and
-            (current_close > self.alpha_trend)
-        )
-        
-        # Sell signal
-        sell_signal = (
-            (current_close < self.lowestClose[-2]) and
-            (previous_close >= self.lowestClose[-2]) and
-            (current_close < current_ma) and
-            (current_close < self.alpha_trend)
-        )
-        
-        # Execute trades based on signals
-        if buy_signal:
-            # Close existing short position if any
-            if self.position and self.position.is_short:
-                self.position.close()
-            # Buy with stop loss and take profit
-            sl = current_close * (1 - self.stop_loss_perc)
-            tp = current_close * (1 + self.take_profit_perc)
-            self.buy(sl=sl, tp=tp)
-        
-        elif sell_signal:
-            # Close existing long position if any
-            if self.position and self.position.is_long:
-                self.position.close()
-            # Sell with stop loss and take profit
-            sl = current_close * (1 + self.stop_loss_perc)
-            tp = current_close * (1 - self.take_profit_perc)
-            self.sell(sl=sl, tp=tp)
+        try:
+            if self.data.signal[-1] == 1:
+
+                if self.position():
+                        if self.position().is_short:
+                            print("Closing short position before opening long")
+                            self.position().close()
+                        elif self.position().is_long:
+                            print("Already in long position, no action needed")
+                            return
+                self.buy(
+                    stop=self.data['Close'][-1] * (1 - self.stop_loss_perc),
+                    limit=self.data['Close'][-1] * (1 + self.take_profit_perc)
+                )
+            elif self.data.signal[-1] == -1:
+                if self.position():
+                    if self.position().is_long:
+                        print("Closing long position before opening short")
+                        self.position().close()
+                    elif self.position().is_short:
+                        print("Already in short position, no action needed")
+                        return
+                self.sell(
+                    stop=self.data['Close'][-1] * (1 + self.stop_loss_perc),
+                    limit=self.data['Close'][-1] * (1 - self.take_profit_perc)
+                )
+        except Exception as e:
+            print(f"Error in TRMUSStrategy next: {e}")
+            raise
+
+
+
+
 
 
 
 
 data = load_data(data_path)
-
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data,TRMUSStrategy, cash=100000, commission=.002, exclusive_orders=True)
-
-
-
 stats = bt.run()
 print(stats)
-
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)

@@ -1,170 +1,24 @@
 import pandas as pd
 import pandas as pd
 import numpy as np
-from backtesting import Strategy, Backtest
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import pandas_ta as ta
-import logging
-
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi/1.STATISTICAL_BASED/0.DATA/BTCUSDT/future/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-import pandas as pd
-import pandas_ta as ta
-import logging
-from backtesting import Backtest, Strategy
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-class StochRSIMoveStrategy(Strategy):
-    # Strategy Parameters
-    lookback_period = 24               # Lookback period in bars for 30min timeframe (12 hours)
-    rsi_length = 14                    # RSI Length
-    stoch_length = 14                  # Stochastic RSI Length
-    k_length = 3                       # Stochastic %K Length
-    d_length = 3                       # Stochastic %D Length
-    big_move_threshold = 2.5 / 100     # Big Move Threshold as percentage (2.5%)
-
-    def init(self):
-        """
-        Initialize indicators.
-        """
-        try:
-           
-
-            # Calculate RSI without filling NaN values with zeros
-            self.rsi = self.I(
-                lambda close: ta.rsi(pd.Series(close), length=self.rsi_length).fillna(method='ffill').values,
-                self.data.Close
-            )
-
-            # Calculate Stochastic RSI with correct parameter assignments
-            stoch_rsi = ta.stochrsi(
-                pd.Series(self.rsi),
-                length=self.stoch_length,
-                rsi_length=self.rsi_length,
-                smooth1=self.k_length,
-                smooth2=self.d_length,
-                append=False
-            )
-
-            # Log the columns of Stochastic RSI to verify correctness
-            logging.info(f"Stochastic RSI columns: {stoch_rsi.columns.tolist()}")
-
-            # Dynamically generate expected column names based on parameters
-            stochrsi_k_col = f'STOCHRSIk_{self.stoch_length}_{self.rsi_length}_{self.k_length}_{self.d_length}'
-            stochrsi_d_col = f'STOCHRSId_{self.stoch_length}_{self.rsi_length}_{self.k_length}_{self.d_length}'
-
-            expected_stochrsi_columns = [stochrsi_k_col, stochrsi_d_col]
-
-            # Validate Stochastic RSI calculation
-            for col in expected_stochrsi_columns:
-                if col not in stoch_rsi.columns:
-                    raise ValueError(f"Stochastic RSI calculation missing expected column: {col}")
-
-            # Calculate Stochastic RSI %K using SMA smoothing
-            self.stochrsi_k = self.I(
-                lambda stoch_k: ta.sma(pd.Series(stoch_k), length=self.k_length).fillna(method='ffill').values,
-                stoch_rsi[stochrsi_k_col]
-            )
-
-            # Calculate Stochastic RSI %D using SMA smoothing
-            self.stochrsi_d = self.I(
-                lambda stoch_d: ta.sma(pd.Series(stoch_d), length=self.d_length).fillna(method='ffill').values,
-                self.stochrsi_k
-            )
-
-            # Calculate Percent Price Change from 12 hours ago
-            self.price_12hrs_ago = self.I(
-                lambda close: pd.Series(close).shift(self.lookback_period - 1).fillna(method='bfill').values,
-                self.data.Close
-            )
-            self.percent_change = self.I(
-                lambda close, price_12hrs: (abs(pd.Series(close) - pd.Series(price_12hrs)) / pd.Series(price_12hrs)).fillna(0).values,
-                self.data.Close,
-                self.price_12hrs_ago
-            )
-
-            logging.info("Indicator calculations completed successfully.")
-
-        except Exception as e:
-            logging.error(f"Error during initialization: {e}")
-            raise
-
-    def next(self):
-        """
-        Generate signals and manage positions.
-        """
-        try:
-            # Retrieve current indicator values
-            current_percent_change = self.percent_change[-1]
-            current_stochrsi_k = self.stochrsi_k[-1]
-            current_stochrsi_d = self.stochrsi_d[-1]
-
-            # Initialize signal
-            signal = 0
-
-            # Check for Big Move
-            if current_percent_change >= self.big_move_threshold:
-                # Check for Oversold Conditions for Long Entry
-                if current_stochrsi_k < 3 or current_stochrsi_d < 3:
-                    signal = 1  # Long Signal
-                    logging.info(f"Long Signal detected at price {self.data.Close[-1]:.2f}.")
-
-                # Check for Overbought Conditions for Short Entry
-                elif current_stochrsi_k > 97 or current_stochrsi_d > 97:
-                    signal = -1  # Short Signal
-                    logging.info(f"Short Signal detected at price {self.data.Close[-1]:.2f}.")
-
-            # Execute Long Signal
-            if signal == 1:
-                # Close existing short position if any
-                if self.position and self.position.is_short:
-                    logging.info("Closing existing short position before entering long position.")
-                    self.position.close()
-
-                # Enter long position
-                logging.info(f"Executing Long Order at price {self.data.Close[-1]:.2f}.")
-                self.buy()
-
-            # Execute Short Signal
-            elif signal == -1:
-                # Close existing long position if any
-                if self.position and self.position.is_long:
-                    logging.info("Closing existing long position before entering short position.")
-                    self.position.close()
-
-                # Enter short position
-                logging.info(f"Executing Short Order at price {self.data.Close[-1]:.2f}.")
-                self.sell()
-
-        except Exception as e:
-            logging.error(f"Error in next method: {e}")
-            raise
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
 def load_data(csv_file_path):
-    """
-    Load and preprocess data from a CSV file.
-
-    Parameters:
-    - csv_file_path (str): Path to the CSV file.
-
-    Returns:
-    - pd.DataFrame: Preprocessed DataFrame with necessary columns.
-    """
     try:
+        
         data = pd.read_csv(csv_file_path)
-
-        # Ensure that the 'timestamp' column is in datetime format
-        if 'timestamp' in data.columns:
-            data['timestamp'] = pd.to_datetime(data['timestamp'])
-            data.set_index('timestamp', inplace=True)  # Set as DatetimeIndex
-        else:
-            raise ValueError("CSV data must contain a 'timestamp' column.")
-
-        # Rename columns to match backtesting library expectations
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -172,22 +26,122 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
-
-        # Handle missing values by forward filling
-        data.fillna(method='ffill', inplace=True)
-
-        logging.info("Data loaded and preprocessed successfully.")
+       
         return data
-
     except Exception as e:
-        logging.error(f"Failed to load data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
 
-data = load_data(data_path)
 
+
+
+def calculate_daily_indicators(df):
+    try:
+        print("Calculating RSI, Stochastic RSI, and price change")
+
+        lookback_period = 24  # Lookback period in bars for 30min timeframe
+        rsi_length = 14  # RSI Length
+        stoch_length = 14  # Stochastic RSI Length
+        k = 3  # Stochastic %K
+        d = 3  # Stochastic %D
+        big_move_threshold = 2.5 / 100  # Big Move Threshold as percentage
+
+        # Calculate RSI
+        df['RSI'] = ta.rsi(df['Close'], length=rsi_length)
+
+        # Calculate Stochastic RSI
+        stoch_rsi = ta.stochrsi(df['RSI'], length=stoch_length)
+
+    
+      
+    
+        df['StochRSI_K'] = ta.sma(stoch_rsi['STOCHRSIk_14_14_3_3'], length=k)
+        df['StochRSI_D'] = ta.sma(df['StochRSI_K'], length=d)
+
+        # Calculate percent price change from 12 hours ago (lookback period)
+        df['Price_12hrs_Ago'] = df['Close'].shift(lookback_period - 1)
+        df['Percent_Change'] = abs(df['Close'] - df['Price_12hrs_Ago']) / df['Price_12hrs_Ago']
+
+        # # Drop NaN rows
+        # df.dropna(inplace=True)
+
+        print("Indicator calculation complete")
+        return df
+    except Exception as e:
+        print(f"Error in calculate_daily_indicators: {e}")
+        raise
+
+
+def generate_signals(df):
+    try:
+        print("Generating signals based on Stoch RSI and price moves")
+
+        # Initialize signal column
+        df['signal'] = 0
+
+        big_move_threshold = 2.5 / 100  # Big Move Threshold as percentage
+
+        for i in range(len(df)):
+            # Check conditions for entering long or short
+            if (df['Percent_Change'].iloc[i] >= big_move_threshold) and (df['StochRSI_K'].iloc[i] < 3 or df['StochRSI_D'].iloc[i] < 3):
+                df.at[df.index[i], 'signal'] = 1  # Long signal
+            elif (df['Percent_Change'].iloc[i] >= big_move_threshold) and (df['StochRSI_K'].iloc[i] > 97 or df['StochRSI_D'].iloc[i] > 97):
+                df.at[df.index[i], 'signal'] = -1  # Short signal
+
+        print("Signal generation complete")
+        return df.dropna()
+    except Exception as e:
+        print(f"Error in generate_signals: {e}")
+        raise
+
+
+
+
+
+class StochRSIMoveStrategy(Strategy):
+    def init(self):
+        try:
+            print("Initializing strategy")
+            self.entry_price = None
+            print("Strategy initialization complete")
+        except Exception as e:
+            print(f"Error in init method: {e}")
+            raise
+
+    def next(self):
+        try:
+            # Buy signal
+            if self.data.signal[-1] == 1 :
+                print(f"Long entry signal at close price {self.data.Close[-1]}")
+                self.entry_price = self.data.Close[-1]
+                if self.position():
+                    if self.position().is_short:
+                        self.position().close()
+                        
+                self.buy()
+
+            # Sell/Short signal
+            if self.data.signal[-1] == -1 :
+                print(f"Short entry signal at close price {self.data.Close[-1]}")
+                self.entry_price = self.data.Close[-1]
+                if self.position():
+                    if self.position().is_long:
+                        self.position().close()
+                        
+                self.sell()
+
+        except Exception as e:
+            print(f"Error in next method: {e}")
+            raise
+
+
+
+
+data = load_data(data_path)
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data, StochRSIMoveStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
-
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)

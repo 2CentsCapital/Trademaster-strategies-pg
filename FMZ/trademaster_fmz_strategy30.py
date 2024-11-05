@@ -1,32 +1,23 @@
 import pandas as pd
 import numpy as np
-from backtesting import Strategy, Backtest
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
 import pandas_ta as ta
-import logging
-import coloredlogs
 
-# Set up logging
-log_file_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi_strategy_backtest/1.STATISTICAL_AND_PROBABILITY_BASED/1.fmz_pinescript_strategies_backtest/Trademaster_fmz_30_strategies/tradebook/30_FlawlessVictoryDCA.log'
 
-# Configure basic logging to file
-logging.basicConfig(level=logging.DEBUG, filename=log_file_path, filemode='a',
-                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Set up colored logs for console output
-coloredlogs.install(level='DEBUG',
-                    fmt='%(asctime)s - %(levelname)s - %(message)s',
-                    level_styles={
-                        'info': {'color': 'green'},
-                        'debug': {'color': 'white'},
-                        'error': {'color': 'red'},
-                    })
 
-def load_and_prepare_data(csv_file_path):
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
+
+def load_data(csv_file_path):
     try:
-        logging.info("Loading and preparing data.")
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -34,10 +25,10 @@ def load_and_prepare_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
-        logging.info("Data loading and preparation complete.")
-        return data.dropna()
+       
+        return data
     except Exception as e:
-        logging.error(f"Error in load_and_prepare_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
 
@@ -170,7 +161,7 @@ def generate_signals(df):
 
 class FlawlessVictoryDCA(Strategy):
     def init(self):
-      logging.info("Starting")
+      print("Starting")
 
     def next(self):
         signal = self.data.signal[-1]
@@ -182,40 +173,18 @@ class FlawlessVictoryDCA(Strategy):
             self.sell()
 
         elif signal == -2:
-            self.position.close()
+            self.position().close()
 
 
 
-# Main script execution
-try:
-    # Load and prepare data
-    data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi_strategy_backtest/0.DATA/BTCUSDT/spot/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
 
-    minute_data = load_and_prepare_data(data_path)
-   
 
-    # Calculate daily indicators and generate signals
-    daily_data = calculate_daily_indicators(minute_data)
-    logging.info(f"indicator generation complete data\n{daily_data}")
-    daily_signals = generate_signals(daily_data)
 
-   
-
-    
-    # Run backtest
-    bt = Backtest(daily_signals, FlawlessVictoryDCA, cash=1000000, commission=.002)
-    stats = bt.run()
-    logging.info(stats)
-    logging.info("Backtest complete")
-
-    # Convert the trades to a DataFrame
-    trades = stats['_trades']  # Accessing the trades DataFrame from the stats object
-
-    # Save the trades to a CSV file
-    trades_csv_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi_strategy_backtest/1.STATISTICAL_AND_PROBABILITY_BASED/1.fmz_pinescript_strategies_backtest/Trademaster_fmz_30_strategies/tradebook/30_FlawlessVictoryDCA_backtest_trades.csv'
-    trades.to_csv(trades_csv_path)
-
-    logging.info(f"Trades have been exported to {trades_csv_path}")
-
-except Exception as e:
-    logging.error(f"Error in main script execution: {e}")
+minute_data = load_data(data_path)
+daily_data = calculate_daily_indicators(minute_data)
+daily_signals = generate_signals(daily_data)
+bt = Backtest(daily_signals ,FlawlessVictoryDCA, cash=100000, commission=.002, exclusive_orders=True)
+stats = bt.run()
+print(stats)
+bt.plot(superimpose=False)
+#bt.tear_sheet()

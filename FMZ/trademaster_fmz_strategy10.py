@@ -1,16 +1,23 @@
 import pandas as pd
 import numpy as np
-from backtesting import Backtest, Strategy
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
 import pandas_ta as ta
-from backtesting.lib import crossover
+from TradeMaster.lib import crossover
+import numpy as np
+import pandas_ta as ta
+from datetime import time
+import logging
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023_2024.csv'
 
 def load_data(csv_file_path):
-
+    try:
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        data['timestamp'] = pd.to_datetime(data['timestamp'])  # Ensure the timestamp is in datetime format
+        data.set_index('timestamp', inplace=True)  # Set the datetime column as index
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -19,72 +26,152 @@ def load_data(csv_file_path):
             'volume': 'Volume'
         }, inplace=True)
         return data
-  
+    except Exception as e:
+        print(f"Error in load_and_prepare_data: {e}")
+        raise
 
 
-def compute_vwap(high, low, close, volume):
-    typical_price = (high + low + close) / 3
-    cumulative_vp = (typical_price * volume).cumsum()
-    cumulative_volume = volume.cumsum()
-    vwap = cumulative_vp / cumulative_volume
-    return vwap
 
-# Strategy Class
+
+# Function to calculate indicators on the daily timeframe
+def calculate_daily_indicators(daily_data, length_ema=9, length_wma=30, fast_length=12, slow_length=26, macd_length=9):
+    try:
+        
+        # Calculate EMA, WMA, and MACD
+        daily_data['ema9'] = ta.ema(daily_data['Close'], length=length_ema)
+        daily_data['wma30'] = ta.wma(daily_data['Close'], length=length_wma)
+        macd = ta.macd(daily_data['Close'], fast=fast_length, slow=slow_length, signal=macd_length)
+        daily_data['macd_line'] = macd['MACD_12_26_9']
+        daily_data['signal_line'] = macd['MACDs_12_26_9']
+
+        # Additional Indicators
+        daily_data['sma200'] = ta.sma(daily_data['Close'], length=200)
+        daily_data['ema21'] = ta.ema(daily_data['Close'], length=21)
+        daily_data['vwap'] = ta.vwap(daily_data['High'], daily_data['Low'], daily_data['Close'], daily_data['Volume'])
+
+        logging.info("Daily indicator calculation complete")
+        return daily_data
+    except Exception as e:
+        logging.error(f"Error in calculate_daily_indicators: {e}")
+        raise
+
+
+# Function to generate buy/sell signals based on the strategy logic
+def generate_signals(daily_data):
+    try:
+        logging.info("Generating signals based on strategy logic")
+
+        # Initialize columns for signals and counts
+        daily_data['buy_signal'] = 0
+        daily_data['below_ema9_count'] = 0
+        daily_data['below_wma30_count'] = 0
+        daily_data['macd_bearish_cross'] = 0
+
+        # Initialize counters
+        below_ema9_count = 0
+        below_wma30_count = 0
+
+        # Loop through the DataFrame, starting from index 1
+        for i in range(1, len(daily_data)):
+            # Check EMA9/WMA30 crossover and MACD confirmation
+            prev_ema9 = daily_data['ema9'].iloc[i - 1]
+            prev_wma30 = daily_data['wma30'].iloc[i - 1]
+            current_ema9 = daily_data['ema9'].iloc[i]
+            current_wma30 = daily_data['wma30'].iloc[i]
+            macd_line = daily_data['macd_line'].iloc[i]
+            signal_line = daily_data['signal_line'].iloc[i]
+
+            # Check for EMA9/WMA30 crossover
+            buy_signal = (prev_ema9 < prev_wma30) and (current_ema9 > current_wma30) and \
+                         (macd_line > signal_line)
+
+            if buy_signal:
+                daily_data.at[daily_data.index[i], 'buy_signal'] = 1
+
+            # Compute consecutive counts for closes below EMA9 and WMA30
+            if daily_data['Close'].iloc[i] < current_ema9:
+                below_ema9_count += 1
+            else:
+                below_ema9_count = 0
+
+            if daily_data['Close'].iloc[i] < current_wma30:
+                below_wma30_count += 1
+            else:
+                below_wma30_count = 0
+
+            daily_data.at[daily_data.index[i], 'below_ema9_count'] = below_ema9_count
+            daily_data.at[daily_data.index[i], 'below_wma30_count'] = below_wma30_count
+
+            # Check for MACD bearish crossover
+            prev_macd_line = daily_data['macd_line'].iloc[i - 1]
+            prev_signal_line = daily_data['signal_line'].iloc[i - 1]
+            macd_bearish_cross = (prev_macd_line > prev_signal_line) and (macd_line < signal_line)
+
+            if macd_bearish_cross:
+                daily_data.at[daily_data.index[i], 'macd_bearish_cross'] = 1
+
+            # Exit conditions
+            exit_condition1 = (below_ema9_count >= 2) and (below_wma30_count >= 1)
+            exit_condition2 = macd_bearish_cross
+
+            if exit_condition1 or exit_condition2:
+                daily_data.at[daily_data.index[i], 'signal'] = -1
+            elif daily_data['buy_signal'].iloc[i] == 1:
+                daily_data.at[daily_data.index[i], 'signal'] = 1
+            else:
+                daily_data.at[daily_data.index[i], 'signal'] = 0
+
+        logging.info("Signal generation complete")
+        return daily_data
+
+    except Exception as e:
+        logging.error(f"Error in generate_signals: {e}")
+        raise
+
+
+
+# Define the strategy class
 class EMA9WMA30Strategy(Strategy):
     def init(self):
+        try:
+            logging.info("Initializing strategy")
 
-        close = pd.Series(self.data.Close)
-        high = pd.Series(self.data.High)
-        low = pd.Series(self.data.Low)
-        volume = pd.Series(self.data.Volume)
-        self.ema9 = self.I(ta.ema, close, 9)
-        self.wma30 = self.I(ta.wma, close, 30)
-        macd = self.I(ta.macd, close, fast=12, slow=26, signal=9)
-        self.macd_line = macd[0]
-        self.signal_line = macd[1]
 
-        # Additional indicators
-        self.sma200 = self.I(ta.sma, close, 200)
-        self.ema21 = self.I(ta.ema, close, 21)
-        
-        self.vwap = self.I(compute_vwap, high, low, close, volume)
-
+            logging.info("Strategy initialization complete")
+        except Exception as e:
+            logging.error(f"Error in init method: {e}")
+            raise
 
     def next(self):
-        # Previous and current values for EMA9 and WMA30
-        prev_ema9 = self.ema9[-2]
-        prev_wma30 = self.wma30[-2]
-        current_ema9 = self.ema9[-1]
-        current_wma30 = self.wma30[-1]
-        macd_line = self.macd_line[-1]
-        signal_line = self.signal_line[-1]
+        try:
+            # logging.debug(f"Processing bar: {self.data.index[-1]} with signal {self.data.signal[-1]} at price {self.data.Close[-1]}")
+            # Check for signals and execute trades based on signal value
+            if self.data.signal[-1] == 1:
+                logging.debug(f"Buy signal detected, close={self.data.Close[-1]}")
+                self.buy()
 
-        # Buy Signal Condition: EMA9 crosses above WMA30 with MACD confirmation
-        buy_signal = (prev_ema9 < prev_wma30) and (current_ema9 > current_wma30) and (macd_line > signal_line)
+            elif self.data.signal[-1] == -1 :
+                logging.debug(f"Sell signal detected, close={self.data.Close[-1]}")
+                self.position().close()
 
-        # Exit Condition 1: Close is below EMA9 for at least 2 days and below WMA30 for at least 1 day
-        below_ema9_count = sum(self.data.Close[-i] < self.ema9[-i] for i in range(1, 3))  # 2 days below EMA9
-        below_wma30_count = self.data.Close[-1] < self.wma30[-1]  # 1 day below WMA30
+        except Exception as e:
+            logging.error(f"Error in next method: {e}")
+            raise
 
-        # Exit Condition 2: MACD bearish crossover
-        macd_bearish_cross = (self.macd_line[-2] > self.signal_line[-2]) and (macd_line < signal_line)
 
-        # Exit Conditions
-        exit_condition1 = below_ema9_count >= 2 and below_wma30_count
-        exit_condition2 = macd_bearish_cross
 
-        # Execute buy/sell based on signals
-        if buy_signal:
-            self.buy()
-        elif exit_condition1 or exit_condition2:
-            if self.position:
-                self.position.close()
 
+
+
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
 
 data = load_data(data_path)
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data,EMA9WMA30Strategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
+bt.plot(superimpose=False)
+#bt.tear_sheet()
 
-# bt.plot(superimpose=False)

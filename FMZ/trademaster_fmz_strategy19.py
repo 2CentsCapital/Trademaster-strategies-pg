@@ -1,37 +1,24 @@
 import pandas as pd
 import numpy as np
-from backtesting import Strategy, Backtest
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import pandas_ta as ta
-from backtesting.lib import crossover
 
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi/1.STATISTICAL_BASED/0.DATA/BTCUSDT/future/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
-# Helper functions for indicators
-def rolling_max(x, window):
-    return pd.Series(x).rolling(window=window).max().fillna(0).values
 
-def rolling_min(x, window):
-    return pd.Series(x).rolling(window=window).min().fillna(0).values
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
-def calculate_rsv(close, low, high):
-    with np.errstate(divide='ignore', invalid='ignore'):
-        rsv = 100 * (pd.Series(close) - pd.Series(low)) / (pd.Series(high) - pd.Series(low))
-        rsv = rsv.replace([np.inf, -np.inf], 0).fillna(0)
-    return rsv.values
-
-def rolling_mean(x, window):
-    return pd.Series(x).rolling(window=window).mean().fillna(0).values
-
-def calculate_j(k, d):
-    j = 3 * pd.Series(k) - 2 * pd.Series(d)
-    j = j.fillna(0).values
-    return j
 
 def load_data(csv_file_path):
     try:
+        
         data = pd.read_csv(csv_file_path)
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        data.set_index('timestamp', inplace=True)
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -39,178 +26,102 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
+       
         return data
     except Exception as e:
-        logging.error(f"Error in load_data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
 
-# Strategy Class
+
+
+
+def calculate_daily_indicators(df):
+    try:
+        # KDJ calculation (using highest, lowest, and simple moving averages)
+        kdj_length = 9
+        kdj_signal = 3
+
+        kdj_highest = df['High'].rolling(window=kdj_length).max()
+        kdj_lowest = df['Low'].rolling(window=kdj_length).min()
+        kdj_rsv = 100 * (df['Close'] - kdj_lowest) / (kdj_highest - kdj_lowest)
+        df['K'] = kdj_rsv.rolling(window=kdj_signal).mean()
+        df['D'] = df['K'].rolling(window=kdj_signal).mean()
+        df['J'] = 3 * df['K'] - 2 * df['D']
+
+        # Moving Average calculation
+        ma_length = 20
+        df['MA'] = df['Close'].rolling(window=ma_length).mean()
+
+        # Drop NaN rows created by rolling windows
+        df.dropna(inplace=True)
+
+        return df
+
+    except Exception as e:
+        print(f"Error in calculate_daily_indicators: {e}")
+        raise
+
+
+
+def generate_signals(df):
+    try:
+        print("Generating signals")
+
+        # Initialize signal column
+        df['signal'] = 0
+
+        # Define KDJ overbought and oversold levels
+        kdj_overbought = 80
+        kdj_oversold = 20
+
+        # Moving Average crossovers
+        df['ma_cross_up'] = (df['Close'] > df['MA']) & (df['Close'].shift(1) <= df['MA'].shift(1))
+        df['ma_cross_down'] = (df['Close'] < df['MA']) & (df['Close'].shift(1) >= df['MA'].shift(1))
+
+        # Generate Buy (Long) and Sell (Short) signals
+        df.loc[(df['J'] <= kdj_oversold) & df['ma_cross_up'], 'signal'] = 1  # Buy
+        df.loc[(df['J'] >= kdj_overbought) & df['ma_cross_down'], 'signal'] = -1  # Sell
+
+        return df
+
+    except Exception as e:
+        print(f"Error in generate_signals: {e}")
+        raise
+
+
+
+
+
 class KDJMAStrategy(Strategy):
-    # Strategy parameters
-    kdj_length = 9
-    kdj_signal = 3
-    ma_length = 20
-    kdj_overbought = 80
-    kdj_oversold = 20
-    atr_length = 14
-    reward_to_risk_ratio = 1.2
-    max_sl_dist_ratio = 0.1  # Max SL distance as a fraction of price (e.g., 10%)
-    
     def init(self):
-      
-        
-        # KDJ Indicators
-        # Highest High over kdj_length
-        self.kdj_highest = self.I(rolling_max, self.data.High, self.kdj_length)
-        # Lowest Low over kdj_length
-        self.kdj_lowest = self.I(rolling_min, self.data.Low, self.kdj_length)
-        
-        # RSV calculation
-        self.kdj_rsv = self.I(calculate_rsv, self.data.Close, self.kdj_lowest, self.kdj_highest)
-        
-        # K calculation: kdj_signal-period moving average of RSV
-        self.k = self.I(rolling_mean, self.kdj_rsv, self.kdj_signal)
-        
-        # D calculation: kdj_signal-period moving average of K
-        self.d = self.I(rolling_mean, self.k, self.kdj_signal)
-        
-        # J calculation: 3*K - 2*D
-        self.j = self.I(calculate_j, self.k, self.d)
-        
-        # Moving Average
-        self.ma = self.I(rolling_mean, self.data.Close, self.ma_length)
-        
-        # ATR for Risk Management
-        self.atr = self.I(lambda high, low, close: ta.atr(pd.Series(high), pd.Series(low), pd.Series(close), length=self.atr_length).fillna(0).values,
-                         self.data.High, self.data.Low, self.data.Close)
-        
-        # Initialize stop loss and take profit levels
-        self.stop_loss = None
-        self.take_profit = None
+        self.entry_price = None
 
     def next(self):
-        # Current index
-        i = len(self.data) - 1
-        
-        # Ensure we have enough data
-        if i < self.kdj_length + self.kdj_signal - 1:
-            return
-        
-        # Current and previous prices
-        current_close = self.data.Close[-1]
-        previous_close = self.data.Close[-2]
-        
-        # Current indicator values
-        current_j = self.j[-1]
-        previous_j = self.j[-2]
-        
-        current_ma = self.ma[-1]
-        previous_ma = self.ma[-2]
-        
-        # Define Bear and Bull conditions
-        bear_condition = (
-            (previous_close > previous_ma) &
-            (current_close < current_ma) &
-            (previous_j > self.kdj_overbought) &
-            (current_j > self.kdj_overbought)
-        )
-        
-        bull_condition = (
-            (previous_close < previous_ma) &
-            (current_close > current_ma) &
-            (previous_j < self.kdj_oversold) &
-            (current_j < self.kdj_oversold)
-        )
-        
-        # Initialize signal
-        signal = 0
-        
-        if bear_condition:
-            signal = 1  # Enter Short
-
-        
-        elif bull_condition:
-            signal = -1  # Enter Long
+        if self.data.signal[-1] == 1:
+            if self.position():
+                    if self.position().is_short:
+                        self.position().close()
+            self.buy()
            
-        
-        # Execute trades based on signals
-        if signal == 1:
-            self.enter_short(current_close)
-        
-        elif signal == -1:
-            self.enter_long(current_close)
-    
-    def enter_long(self, price):
-        # Calculate ATR for stop loss distance
-        atr = self.atr[-1]
-        candle_body = abs(self.data.Close[-1] - self.data.Open[-1])
-        sl_dist = atr + candle_body
-        if sl_dist <= 0 or np.isnan(sl_dist):
+                        
           
-            return  # Cannot proceed with invalid sl_dist
-        
-        # Calculate stop loss and take profit levels
-        stop_loss = price - sl_dist  # Stop loss for long position
-        take_profit = price + (sl_dist * self.reward_to_risk_ratio)  # Take profit for long position
-        
-        # Ensure stop_loss < price < take_profit
-        if stop_loss >= price:
-            stop_loss = price - 0.0001  # Adjust to be slightly below
-        
-        # Close existing short position if any
-        if self.position and self.position.is_short:
-          
-            self.position.close()
-        
-        # Execute the buy order with stop loss and take profit
-        self.buy(sl=stop_loss, tp=take_profit)
-
-    def enter_short(self, price):
-        # Calculate ATR for stop loss distance
-        atr = self.atr[-1]
-        candle_body = abs(self.data.Close[-1] - self.data.Open[-1])
-        sl_dist = atr + candle_body
-        if sl_dist <= 0 or np.isnan(sl_dist):
-     
-            return  # Cannot proceed with invalid sl_dist
-        
-        # Limit sl_dist to prevent unrealistic values (e.g., max 10% of current price)
-        max_sl_dist = price * self.max_sl_dist_ratio
-        if sl_dist > max_sl_dist:
-
-            sl_dist = max_sl_dist
-        
-        # Calculate stop loss and take profit levels
-        stop_loss = price + sl_dist  # Stop loss for short position
-        take_profit = price - (sl_dist * self.reward_to_risk_ratio)  # Take profit for short position
-        
-        # Ensure take_profit < price < stop_loss
-        if take_profit >= price:
-            take_profit = price - 0.0001  # Adjust to be slightly below
-        if stop_loss <= price:
-            stop_loss = price + 0.0001  # Adjust to be slightly above
-        
-        # Final validation to ensure correct ordering
-        if not (take_profit < price < stop_loss):
-          
-            return  # Skip placing the order if the condition is not met
-        
-        # Close existing long position if any
-        if self.position and self.position.is_long:
-           
-            self.position.close()
-        
-        # Execute the sell order with stop loss and take profit
-        self.sell(sl=stop_loss, tp=take_profit)
-        
+        elif self.data.signal[-1] == -1 :
+            if self.position():
+                    if self.position().is_long:
+                        self.position().close()
+                        
+            self.sell()
+            
+  
 
 
 
 
 data = load_data(data_path)
-
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data, KDJMAStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)

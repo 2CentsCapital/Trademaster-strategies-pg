@@ -1,245 +1,26 @@
 import pandas as pd
 import pandas as pd
 import numpy as np
-from backtesting import Strategy, Backtest
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import pandas_ta as ta
 
 
 
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/p4_crypto_2cents/cefi/1.STATISTICAL_BASED/0.DATA/BTCUSDT/future/ohlc_data/2023_2024/btc_day_data_2023_2024/btc_day_data_2023_2024.csv'
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
 
-import pandas as pd
-import pandas_ta as ta
-import logging
-from backtesting import Backtest, Strategy
-
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-class BollingerMacdRsiStrategy(Strategy):
-    # Strategy Parameters
-    bb_length = 20
-    bb_multiplier = 2.0
-    macd_fast = 12
-    macd_slow = 26
-    macd_signal = 9
-    rsi_length = 14
-    rsi_oversold = 30
-    rsi_overbought = 70
-    stoploss_input = 0.02  # 2% Stop Loss
-    takeprofit_input = 0.04  # 4% Take Profit
-
-    def init(self):
-        """
-        Initialize indicators.
-        """
-        try:
-            logging.info("Initializing Bollinger Bands, MACD, and RSI indicators.")
-
-            # Bollinger Bands
-            self.bb_basis = self.I(
-                lambda close: ta.sma(pd.Series(close), length=self.bb_length).fillna(0).values,
-                self.data.Close
-            )
-            self.bb_dev = self.I(
-                lambda close: (self.bb_multiplier * ta.stdev(pd.Series(close), length=self.bb_length)).fillna(0).values,
-                self.data.Close
-            )
-            self.bb_upper = self.I(
-                lambda close: (
-                    ta.sma(pd.Series(close), length=self.bb_length).fillna(0) + 
-                    (self.bb_multiplier * ta.stdev(pd.Series(close), length=self.bb_length)).fillna(0)
-                ).values,
-                self.data.Close
-            )
-            self.bb_lower = self.I(
-                lambda close: (
-                    ta.sma(pd.Series(close), length=self.bb_length).fillna(0) - 
-                    (self.bb_multiplier * ta.stdev(pd.Series(close), length=self.bb_length)).fillna(0)
-                ).values,
-                self.data.Close
-            )
-
-            logging.info("Bollinger Bands indicators calculated.")
-
-            # MACD
-            macd = ta.macd(
-                close=pd.Series(self.data.Close),
-                fast=self.macd_fast,
-                slow=self.macd_slow,
-                signal=self.macd_signal
-            )
-
-            # Expected MACD columns based on pandas_ta naming convention
-            expected_macd_columns = [
-                f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}',
-                f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}',
-                f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'
-            ]
-
-            # Validate MACD calculation
-            for col in expected_macd_columns:
-                if col not in macd.columns:
-                    raise ValueError(f"MACD calculation missing expected column: {col}")
-
-            # Assign MACD components using self.I
-            self.macd_line = self.I(
-                lambda close: macd[f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'].fillna(0).values,
-                self.data.Close
-            )
-            self.signal_line = self.I(
-                lambda close: macd[f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'].fillna(0).values,
-                self.data.Close
-            )
-            self.macd_hist = self.I(
-                lambda close: macd[f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'].fillna(0).values,
-                self.data.Close
-            )
-
-            logging.info("MACD indicators calculated.")
-
-            # RSI
-            self.rsi = self.I(
-                lambda close: ta.rsi(pd.Series(close), length=self.rsi_length).fillna(0).values,
-                self.data.Close
-            )
-
-            logging.info("RSI indicator calculated.")
-
-            # Initialize position-related variables
-            self.entry_price = None
-            self.long_profit_target = None
-            self.short_profit_target = None
-
-            logging.info("All indicators initialized successfully.")
-
-        except Exception as e:
-            logging.error(f"Error during initialization: {e}")
-            raise
-
-    def next(self):
-        """
-        Generate signals and manage positions.
-        """
-        try:
-            # Current and previous prices
-            current_close = self.data.Close[-1]
-            previous_close = self.data.Close[-2]
-
-            # Current indicator values
-            current_bb_upper = self.bb_upper[-1]
-            current_bb_lower = self.bb_lower[-1]
-            current_macd = self.macd_line[-1]
-            current_signal = self.signal_line[-1]
-            current_rsi = self.rsi[-1]
-
-            # Previous indicator values
-            previous_macd = self.macd_line[-2]
-            previous_signal = self.signal_line[-2]
-
-            # Initialize signal
-            signal = 0
-
-            # Generate Buy Signal
-            if (current_close < current_bb_lower) and (current_macd > current_signal) and (current_rsi < self.rsi_oversold):
-                signal = 1
-                logging.info(f"Buy Signal detected at price {current_close}.")
-
-            # Generate Sell Signal
-            elif (current_close > current_bb_upper) and (current_macd < current_signal) and (current_rsi > self.rsi_overbought):
-                signal = -1
-                logging.info(f"Sell Signal detected at price {current_close}.")
-
-            # Execute Buy Signal
-            if signal == 1:
-                # Close existing short position if any
-                if self.position and self.position.is_short:
-                    logging.info("Closing existing short position before buying.")
-                    self.position.close()
-
-                # Enter long position
-                logging.info(f"Executing Buy at price {current_close}.")
-                self.buy()
-                self.entry_price = current_close
-                self.long_profit_target = current_close * (1 + self.takeprofit_input)
-                self.short_profit_target = current_close * (1 - self.stoploss_input)
-
-            # Execute Sell Signal
-            elif signal == -1:
-                # Close existing long position if any
-                if self.position and self.position.is_long:
-                    logging.info("Closing existing long position before selling.")
-                    self.position.close()
-
-                # Enter short position
-                logging.info(f"Executing Sell at price {current_close}.")
-                self.sell()
-                self.entry_price = current_close
-                self.long_profit_target = current_close * (1 + self.takeprofit_input)
-                self.short_profit_target = current_close * (1 - self.stoploss_input)
-
-            # Manage Take Profit and Stop Loss for Long Positions
-            if self.position.is_long and self.entry_price:
-                if current_close >= self.long_profit_target:
-                    logging.info(f"Take Profit reached at price {current_close}. Exiting long position.")
-                    self.position.close()
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
-                elif current_close <= self.short_profit_target:
-                    logging.info(f"Stop Loss triggered at price {current_close}. Exiting long position.")
-                    self.position.close()
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
-            # Manage Take Profit and Stop Loss for Short Positions
-            if self.position.is_short and self.entry_price:
-                if current_close <= self.short_profit_target:
-                    logging.info(f"Take Profit reached at price {current_close}. Exiting short position.")
-                    self.position.close()
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
-                elif current_close >= self.long_profit_target:
-                    logging.info(f"Stop Loss triggered at price {current_close}. Exiting short position.")
-                    self.position.close()
-                    self.entry_price = None
-                    self.long_profit_target = None
-                    self.short_profit_target = None
-
-            logging.debug("Next method processing complete.")
-
-        except Exception as e:
-            logging.error(f"Error in next method: {e}")
-            raise
-
-# Function to load data from CSV
 def load_data(csv_file_path):
-    """
-    Load and preprocess data from a CSV file.
-
-    Parameters:
-    - csv_file_path (str): Path to the CSV file.
-
-    Returns:
-    - pd.DataFrame: Preprocessed DataFrame with necessary columns.
-    """
     try:
+        
         data = pd.read_csv(csv_file_path)
-
-        # Ensure that the 'timestamp' column is in datetime format
-        if 'timestamp' in data.columns:
-            data['timestamp'] = pd.to_datetime(data['timestamp'])
-            data.set_index('timestamp', inplace=True)  # Set as DatetimeIndex
-        else:
-            raise ValueError("CSV data must contain a 'timestamp' column.")
-
-        # Rename columns to match backtesting library expectations
+        # data['timestamp'] = pd.to_datetime(data['timestamp'])
+        # data.set_index('timestamp', inplace=True)
         data.rename(columns={
             'open': 'Open',
             'high': 'High',
@@ -247,23 +28,94 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
-
-        # Handle missing values by forward filling
-        data.fillna(method='ffill', inplace=True)
-
-        logging.info("Data loaded and preprocessed successfully.")
+       
         return data
-
     except Exception as e:
-        logging.error(f"Failed to load data: {e}")
+        print(f"Error in load_and_prepare_data: {e}")
         raise
+
+
+def calculate_daily_indicators(df, bb_length=20, bb_multiplier=2.0, macd_fast=12, macd_slow=26, macd_signal=9, rsi_length=14):
+    try:
+        print("Calculating Bollinger Bands, MACD, and RSI on data")
+
+        # Bollinger Bands
+        df['bb_basis'] = ta.sma(df['Close'], length=bb_length)
+        df['bb_dev'] = bb_multiplier * ta.stdev(df['Close'], length=bb_length)
+        df['bb_upper'] = df['bb_basis'] + df['bb_dev']
+        df['bb_lower'] = df['bb_basis'] - df['bb_dev']
+
+        # MACD
+        macd = ta.macd(df['Close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
+        print("macd: ", macd)
+        df['macd_line']=macd['MACD_12_26_9']
+        df['signal_line']=macd['MACDs_12_26_9']
+        df['macd_hist'] =macd['MACDh_12_26_9']
+
+        # RSI
+        df['rsi'] = ta.rsi(df['Close'], length=rsi_length)
+
+        # Drop NaN values
+        df.dropna(inplace=True)
+        print("Indicator calculation complete")
+        return df
+    except Exception as e:
+        print(f"Error in calculate_daily_indicators: {e}")
+        raise
+
+
+# Function to generate buy/sell signals
+def generate_signals(df, rsi_oversold=30, rsi_overbought=70):
+    try:
+        print("Generating buy/sell signals")
+
+        # Buy signal: price below lower Bollinger band, MACD line > signal line, RSI < oversold level
+        df['buy_signal'] = (df['Close'] < df['bb_lower']) & (df['macd_line'] > df['signal_line']) & (df['rsi'] < rsi_oversold)
+
+        # Sell signal: price above upper Bollinger band, MACD line < signal line, RSI > overbought level
+        df['sell_signal'] = (df['Close'] > df['bb_upper']) & (df['macd_line'] < df['signal_line']) & (df['rsi'] > rsi_overbought)
+
+        # Create the 'signal' column
+        # 1 for buy, -1 for sell, and 0 for no signal
+        df['signal'] = 0  # Default to no signal
+        df.loc[df['buy_signal'], 'signal'] = 1  # Buy signal
+        df.loc[df['sell_signal'], 'signal'] = -1  # Sell signal
+
+        print("Signal generation complete")
+        return df
+    except Exception as e:
+        print(f"Error in generate_signals: {e}")
+        raise
+
+
+# Define the strategy class
+class BollingerMacdRsiStrategy(Strategy):
+    def init(self):
+        self.entry_price = None
+
+    def next(self):
+        # Buy signal
+        if self.data.signal[-1] == 1:
+            if self.position():
+                    if self.position().is_short:
+                        self.position().close()
+            self.buy()
+
+        # Sell signal
+        elif self.data.signal[-1] == -1:
+            if self.position():
+                    if self.position().is_long:
+                        self.position().close()
+            self.sell()
+
+
 
 
 
 data = load_data(data_path)
-
+data= calculate_daily_indicators(data)
+data = generate_signals(data)
 bt = Backtest(data,BollingerMacdRsiStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
-
-# bt.plot(superimpose=False)
+bt.plot(superimpose=False)
