@@ -1,15 +1,18 @@
+# https://www.fmz.com/strategy/458268
+
 import pandas as pd
 import numpy as np
 import os
 import sys
+from datetime import datetime
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 from TradeMaster.backtesting import Backtest, Strategy
-import pandas_ta as ta
 from TradeMaster.lib import crossover
 
 data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
+# Load data function
 def load_data(csv_file_path):
     try:
         data = pd.read_csv(csv_file_path)
@@ -24,39 +27,60 @@ def load_data(csv_file_path):
     except Exception as e:
         print(f"Error in load_data: {e}")
         raise
-
-def calculate_coral_trends(data, smoothing_period1=3, constant_d1=0.2, smoothing_period2=6, constant_d2=0.2):
+# Consolidate all indicator calculations in a single function
+def calculate_indicators(data, length=20, mult=2.0):
     try:
-        # Calculate Coral Trend 1
-        ema_value1 = ta.ema(data['Close'], length=smoothing_period1)
-        smooth_ema1 = ta.ema(ema_value1, length=smoothing_period1)
-        data['CoralTrend1'] = smooth_ema1 + constant_d1 * (ema_value1 - smooth_ema1)
-
-        # Calculate Coral Trend 2
-        ema_value2 = ta.ema(data['Close'], length=smoothing_period2)
-        smooth_ema2 = ta.ema(ema_value2, length=smoothing_period2)
-        data['CoralTrend2'] = smooth_ema2 + constant_d2 * (ema_value2 - smooth_ema2)
-
+        # Calculate Bollinger Bands
+        data['basis'] = data['Close'].rolling(window=length).mean()
+        data['dev'] = data['Close'].rolling(window=length).std()
+        data['upper'] = data['basis'] + mult * data['dev']
+        data['lower'] = data['basis'] - mult * data['dev']
+        
+        # Drop rows with NaN values
+        data.dropna(inplace=True)
+        print("Indicator calculation complete")
         return data
     except Exception as e:
-        print(f"Error in calculate_coral_trends: {e}")
+        print(f"Error in calculate_indicators: {e}")
         raise
 
-class DStrykerLTStrategy(Strategy):
+# Strategy class
+class MeanReversionBollingerStrategy(Strategy):
     def init(self):
-        self.coral_trend1 = self.data.CoralTrend1
-        self.coral_trend2 = self.data.CoralTrend2
+        # Tracking variables for entry price and entry date
+        self.entry_price = None
+        self.entry_date = None
+        print("Strategy initialization complete")
 
     def next(self):
-        # Check for crossover between Coral Trend 1 and Coral Trend 2
-        if crossover(self.coral_trend1, self.coral_trend2):
-            if self.position.is_short:
-                self.position.close()
-            self.buy()  # Enter long position on crossover
+        close = self.data.Close[-1]
+        basis = self.data.basis[-1]
+        upper = self.data.upper[-1]
+        lower = self.data.lower[-1]
+    
+        
+        # Long entry condition: Price crosses above the middle band
+        if crossover(self.data.Close, self.data.basis) and (self.entry_date is None or self.entry_date != current_date):
+            self.entry_price = close
+            self.buy()
+            print(f"Entered long position at {close}")
 
+        # Exit conditions: price crosses below middle band or drops 2% below entry price
+        if self.position().is_long:
+            drop_price = self.entry_price * 0.98  # 2% below entry
+            if close <= drop_price:
+                self.position().close()
+                print(f"Emergency stop triggered at {close} due to 2% drop from entry price {self.entry_price}")
+                self.entry_date = None  # Allow new entry
+            elif crossover(self.data.basis,self.data.Close):
+                self.position().close()
+                print(f"Exited long position at {close} due to cross under middle band")
+                self.entry_date = None  # Allow new entry
+
+# Main code
 data = load_data(data_path)
-data = calculate_coral_trends(data)
-bt = Backtest(data, DStrykerLTStrategy, cash=100000, commission=.002, exclusive_orders=True)
+data = calculate_indicators(data, length=20, mult=2.0)
+bt = Backtest(data, MeanReversionBollingerStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 bt.plot(superimpose=False)
