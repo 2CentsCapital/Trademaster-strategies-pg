@@ -1,17 +1,19 @@
-# This is trademaster_fmz_strategy45.py
+# https://www.fmz.com/strategy/472252
+
 import pandas as pd
 import numpy as np
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 from TradeMaster.backtesting import Backtest, Strategy
-import ta
 
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_15m/btc_15min_data_2023.csv'
 
-# Load data function
+data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1h/btc_1h_data_2023.csv'
+
+
+
 def load_data(csv_file_path):
     try:
         data = pd.read_csv(csv_file_path)
@@ -22,79 +24,69 @@ def load_data(csv_file_path):
             'close': 'Close',
             'volume': 'Volume'
         }, inplace=True)
-        data['datetime'] = pd.to_datetime(data['datetime'])
-        data.set_index('datetime', inplace=True)
         return data
     except Exception as e:
         print(f"Error in load_data: {e}")
         raise
 
 # Calculate indicators function
-def calculate_indicators(data):
-    # EMA calculations
-    data['ema_fast'] = data['Close'].ewm(span=3, adjust=False).mean()
-    data['ema_slow'] = data['Close'].ewm(span=4, adjust=False).mean()
-    data['ema_long'] = data['Close'].ewm(span=5, adjust=False).mean()
+def calculate_indicators(data, box_length=5):
+    # Calculate the 25-period moving average
+    data['ma25'] = data['Close'].rolling(window=25).mean()
 
-    # MACD calculation
-    macd_fast = data['Close'].ewm(span=1, adjust=False).mean()
-    macd_slow = data['Close'].ewm(span=2, adjust=False).mean()
-    data['macd_line'] = macd_fast - macd_slow
-    data['signal_line'] = data['macd_line'].ewm(span=3, adjust=False).mean()
+    # Calculate Darvas Box (Highest high and Lowest low over the box period)
+    data['LL'] = data['Low'].rolling(window=box_length).min()
+    data['K1'] = data['High'].rolling(window=box_length).max()
 
-    # RSI calculation
-    delta = data['Close'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=42).mean()
-    avg_loss = loss.rolling(window=42).mean()
-    rs = avg_gain / avg_loss
-    data['rsi'] = 100 - (100 / (1 + rs))
+    # Darvas Box logic (We will also need previous box for calculating the new box levels)
+    data['K2'] = data['High'].rolling(window=box_length-1).max()
+    data['K3'] = data['High'].rolling(window=box_length-2).max()
 
-    # ATR calculation
-    data['tr'] = np.maximum(data['High'] - data['Low'], 
-                            np.maximum(abs(data['High'] - data['Close'].shift()), abs(data['Low'] - data['Close'].shift())))
-    data['atr'] = data['tr'].rolling(window=12).mean()
+    # New high detection logic
+    data['NH'] = data['High'].where(data['High'] > data['K1'].shift(1))
+
+    # Darvas Box logic
+    data['TopBox'] = data.apply(lambda row: row['NH'] if row['K3'] < row['K2'] else np.nan, axis=1)
+    data['BottomBox'] = data.apply(lambda row: row['LL'] if row['K3'] < row['K2'] else np.nan, axis=1)
 
     return data
 
-# Strategy class
-class MisterBuySellSignalsStrategy(Strategy):
+# Strategy class for Darvas Box and MA25 strategy
+class DarvasBoxMA25Strategy(Strategy):
     def init(self):
-        self.data = calculate_indicators(self.data)
+       pass
 
     def next(self):
+        # Access the necessary columns
         close = self.data.Close[-1]
-        atr_value = self.data.atr[-1]
-        rsi = self.data.rsi[-1]
-        macd_line = self.data.macd_line[-1]
-        signal_line = self.data.signal_line[-1]
-        ema_fast = self.data.ema_fast[-1]
-        ema_slow = self.data.ema_slow[-1]
+        ma25 = self.data.ma25[-1]
+        top_box = self.data.TopBox[-1]
+        bottom_box = self.data.BottomBox[-1]
 
-        # Conditions
-        buy_condition = ((ema_fast > ema_slow and ema_fast < ema_slow) or (macd_line > signal_line)) and rsi > 30
-        sell_condition = ((ema_fast < ema_slow and ema_fast > ema_slow) or (macd_line < signal_line)) and rsi < 70
+        # Buy condition: Price breaks above the Darvas Box AND above MA25
+        buy_condition = close > top_box and close > ma25
 
-        # ATR-based stops
-        long_stop = close - atr_value
-        short_stop = close + atr_value
+        # Sell condition: Price breaks below the Darvas Box
+        sell_condition = close < bottom_box
 
-        # Buy position
+        # Executing strategy
         if buy_condition and not self.position.is_long:
             self.buy()
-            self.position.exit(stop=long_stop)
-            print(f"Long entry at {close} with stop at {long_stop}")
+            print(f"Long entry at {close} with top box at {top_box}")
 
-        # Sell position
         elif sell_condition and not self.position.is_short:
             self.sell()
-            self.position.exit(stop=short_stop)
-            print(f"Short entry at {close} with stop at {short_stop}")
+            print(f"Short entry at {close} with bottom box at {bottom_box}")
+
+
+
+
+
 
 # Main code
 data = load_data(data_path)
-bt = Backtest(data, MisterBuySellSignalsStrategy, cash=1000, commission=.002, exclusive_orders=True)
+data = calculate_indicators(data)
+bt = Backtest(data, DarvasBoxMA25Strategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 bt.plot(superimpose=False)

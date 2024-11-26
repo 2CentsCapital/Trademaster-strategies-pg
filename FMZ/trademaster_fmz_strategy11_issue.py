@@ -1,10 +1,16 @@
 import pandas as pd
 import numpy as np
-from backtesting import Backtest, Strategy
-from backtesting.lib import crossover
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
 import logging
 import pandas_ta as ta
-
+from TradeMaster.test import EURUSD
+# from TradeMaster.risk_management.equal_weigh_rm import EqualRiskManagement
+# from TradeMaster.trade_management.atr_tm import ATR_RR_TradeManagement
+# from TradeMaster.trade_management.price_delta import PriceDeltaTradeManagement
 
 
 
@@ -104,28 +110,32 @@ def generate_signals(df):
 class ElliottWaveTDStrategy(Strategy):
     def init(self):
         logging.info("Initializing strategy")
+           #always initialize trademanagement and riskmanagement
+        # self.trade_management_strategy = PriceDeltaTradeManagement(self.price_delta)
+        # self.risk_management_strategy = EqualRiskManagement(initial_risk_per_trade=self.initial_risk_per_trade, initial_capital=self._broker._cash)
+        # self.total_trades = len(self.closed_trades)
 
     
     def next(self):
         # logging.debug(f"Processing bar: {self.data.index[-1]} with signal {self.data.signal[-1]} at price {self.data.Close[-1]}")
          # Check for signals and execute trades based on signal value
-        if self.data.signal[-1] == 1 and not self.position:
+        if self.data.signal[-1] == 1 and not self.position():
             logging.debug(f"Buy signal detected, close={self.data.Close[-1]}")
             self.buy()
 
-        elif self.data.signal[-1] == -1 and not self.position:
+        elif self.data.signal[-1] == -1 and not self.position():
             logging.debug(f"Sell signal detected, close={self.data.Close[-1]}")
             self.sell()
 
         # Exit strategy based on stop loss and take profit
-        if self.position.is_long:
+        if self.position().is_long:
             if self.data.Close[-1] <= self.data.wave1[-1] or self.data.Close[-1] >= self.data.wave3[-1]:
-                self.position.close()
+                self.position().close()
                 logging.info(f"Long position closed at {self.data.Close[-1]}")
 
-        elif self.position.is_short:
+        elif self.position().is_short:
             if self.data.Close[-1] >= self.data.wave1[-1] or self.data.Close[-1] <= self.data.wave3[-1]:
-                self.position.close()
+                self.position().close()
                 logging.info(f"Short position closed at {self.data.Close[-1]}")
       
     
@@ -136,7 +146,7 @@ class ElliottWaveTDStrategy(Strategy):
 
 data_path = "/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1min/btc_1m_data_2023.csv"
 data = load_data(data_path)
-data= calculate_daily_indicators(data)
+data= calculate_daily_indicators(EURUSD)
 data = generate_signals(data)
 bt = Backtest(data, ElliottWaveTDStrategy, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()

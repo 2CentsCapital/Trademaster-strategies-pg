@@ -1,15 +1,19 @@
-# This is trademaster_fmz_strategy42.py
+  #https://www.fmz.com/strategy/439741
 import pandas as pd
 import numpy as np
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.risk_management.equal_weigh_rm import EqualRiskManagement
+from TradeMaster.trade_management.atr_tm import ATR_RR_TradeManagement
+from TradeMaster.trade_management.price_delta import PriceDeltaTradeManagement
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 from TradeMaster.backtesting import Backtest, Strategy
-
-
-data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_2h/btc_2h_data_2023.csv'
+from TradeMaster.test import EURUSD
+import logging
 
 def load_data(csv_file_path):
     try:
@@ -26,50 +30,84 @@ def load_data(csv_file_path):
         print(f"Error in load_data: {e}")
         raise
 
-# Strategy class
-class EnhancedShortStrategy(Strategy):
-    # Parameters
-    short_duration = 7  # days
-    price_drop_percentage = 30  # 30%
-    risk_per_trade = 0.02  # 2% risk per trade
-    stop_loss_percent = 2  # 2% stop loss
-    take_profit_percent = 30  # 30% take profit
 
+
+# Calculate daily indicators
+def calculate_daily_indicators(df):
+    try:
+        # Momentum = src - src[len]
+        df['Momentum'] = df['Close'] - df['Close'].shift(50)
+        
+        # ATR with a length of 14
+        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+        
+        # VIX Fix = (highest(close,VIXFixLength)-low)/(highest(close,VIXFixLength))*100
+        VIXFixLength = 22
+        df['VIXFix'] = ((df['Close'].rolling(window=VIXFixLength).max() - df['Low']) / 
+                        (df['Close'].rolling(window=VIXFixLength).max())) * 100
+        
+        # Band upper and lower for momentum comparison
+        df['BandUpper'] = 5
+        df['BandLower'] = -5
+        
+        df.dropna(inplace=True)
+        return df
+    except Exception as e:
+        print(f"Error calculating daily indicators: {e}")
+        return None
+
+def generate_signals(df):
+    try:
+        # Long1: Momentum > BandUpper
+        df['Long1'] = df['Momentum'] > df['BandUpper']
+        
+        # Short1: Momentum < BandLower
+        df['Short1'] = df['Momentum'] < df['BandLower']
+        
+        # VIX crossover and crossunder conditions
+        df['Long2'] = (df['Momentum'] > df['VIXFix']) & (df['Momentum'].shift(1) <= df['VIXFix'].shift(1))  # Crossover
+        df['Short2'] = (df['Momentum'] < df['VIXFix']) & (df['Momentum'].shift(1) >= df['VIXFix'].shift(1))  # Crossunder
+        
+        # Sell signal: when Short1 condition is met
+        df['SellSignal'] = df['Short1']
+        
+        # Buy signal: when Long2 condition is met (to close short positions)
+        df['BuySignal'] = df['Long2']
+        
+        return df
+    except Exception as e:
+        print(f"Error generating signals: {e}")
+        return None
+
+
+
+
+class FearAndGreedIndex(Strategy):
     def init(self):
-        self.entry_price = None
-        self.short_end = None
-
+        # This method is used to initialize the strategy; no complex indicators are needed here
+        pass
+    
     def next(self):
-        close = self.data.Close[-1]
-        equity = self.equity
+        try:
+            # Check for sell signals and enter short positions
+            if self.data.SellSignal[-1] and not self.position.is_short:
+                self.sell()
+            
+            # Check for buy signals (to close the short positions)
+            if self.data.BuySignal[-1] and self.position.is_short:
+                self.position.close()
+                
+        except Exception as e:
+            print(f"Error in next function: {e}")
 
-        # Calculate position size
-        risk_amount = equity * self.risk_per_trade
-        stop_loss_price = close * (1 + self.stop_loss_percent / 100)
-        stop_loss_pips = abs(stop_loss_price - close)
-        pip_value = 1  # Assuming 1 pip value for BTC_USDT; adjust if necessary
-        position_size = risk_amount / (stop_loss_pips * pip_value)
 
-        # Entry condition
-        if not self.position().is_short:
-            self.sell(size=position_size)
-            self.entry_price = close
-            self.short_end = self.data.index[-1] + timedelta(days=self.short_duration)
-            print(f"Entering short at {close} on {self.data.index[-1]}")
 
-        # Exit conditions
-        exit_condition = self.data.index[-1] >= self.short_end or close <= self.entry_price * (1 - self.price_drop_percentage / 100)
-        stop_loss_condition = close >= self.entry_price * (1 + self.stop_loss_percent / 100)
-        take_profit_condition = close <= self.entry_price * (1 - self.take_profit_percent / 100)
 
-        # Close the short position based on conditions
-        if self.position().is_short and (exit_condition or stop_loss_condition or take_profit_condition):
-            self.position().close()
-            print(f"Exiting short at {close} on {self.data.index[-1]}")
 
-# Main code
-data = load_data(data_path)
-bt = Backtest(data, EnhancedShortStrategy, cash=1000, commission=.002, exclusive_orders=True)
+
+data = calculate_daily_indicators(EURUSD)
+bt = Backtest(data, FearAndGreedIndex, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 bt.plot(superimpose=False)
+bt.tear_sheet()

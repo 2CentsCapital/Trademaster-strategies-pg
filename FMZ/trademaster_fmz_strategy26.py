@@ -1,10 +1,17 @@
 import pandas as pd
 import numpy as np
-from backtesting import Backtest, Strategy
-from backtesting.lib import crossover
+import os
+import sys
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+from TradeMaster.backtesting import Backtest, Strategy
+from TradeMaster.lib import crossover
 import logging
 import pandas_ta as ta
-
+from TradeMaster.test import EURUSD
+from TradeMaster.risk_management.equal_weigh_rm import EqualRiskManagement
+from TradeMaster.trade_management.atr_tm import ATR_RR_TradeManagement
+from TradeMaster.trade_management.price_delta import PriceDeltaTradeManagement
 
 
 
@@ -102,6 +109,10 @@ class Fukuiz_Trading_Strategy(Strategy):
         try:
             logging.info("Initializing Fukuiz Trading Strategy")
             self.entry_price = None
+                #always initialize trademanagement and riskmanagement
+            # self.trade_management_strategy = PriceDeltaTradeManagement(self.price_delta)
+            # self.risk_management_strategy = EqualRiskManagement(initial_risk_per_trade=self.initial_risk_per_trade, initial_capital=self._broker._cash)
+            # self.total_trades = len(self.closed_trades)
             logging.info("Initialization complete")
         except Exception as e:
             logging.error(f"Error in init method: {e}")
@@ -118,8 +129,8 @@ class Fukuiz_Trading_Strategy(Strategy):
             if current_signal==1:
                 logging.debug(f"Buy signal detected,  at close={current_price}")
                 self.entry_price = current_price
-                if self.position.is_short:
-                    self.position.close()
+                if self.position().is_short:
+                    self.position().close()
                 self.buy()  
 
 
@@ -128,8 +139,8 @@ class Fukuiz_Trading_Strategy(Strategy):
             if current_signal==-1:
                 logging.debug(f"sell signal detected,g at close={current_price}")
                 self.entry_price = current_price
-                if self.position.is_long:
-                    self.position.close()
+                if self.position().is_long:
+                    self.position().close()
                 self.buy() 
 
 
@@ -146,9 +157,10 @@ class Fukuiz_Trading_Strategy(Strategy):
 data_path = '/Users/pranaygaurav/Downloads/AlgoTrading/1.DATA/CRYPTO/spot/2023/BTCUSDT/btc_2023_1d/btc_day_data_2023.csv'
 
 data = load_data(data_path)
-data= calculate_daily_indicators(data)
+data= calculate_daily_indicators(EURUSD)
 data = generate_signals(data)
 bt = Backtest(data, Fukuiz_Trading_Strategy, cash=1000000, commission=.002)
 stats = bt.run()
 print(stats)
 bt.plot(superimpose=False)
+bt.tear_sheet()

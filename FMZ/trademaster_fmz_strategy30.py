@@ -6,7 +6,10 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 from TradeMaster.backtesting import Backtest, Strategy
 import pandas_ta as ta
-
+from TradeMaster.test import EURUSD
+from TradeMaster.risk_management.equal_weigh_rm import EqualRiskManagement
+from TradeMaster.trade_management.atr_tm import ATR_RR_TradeManagement
+from TradeMaster.trade_management.price_delta import PriceDeltaTradeManagement
 
 
 
@@ -161,7 +164,11 @@ def generate_signals(df):
 
 class FlawlessVictoryDCA(Strategy):
     def init(self):
-      print("Starting")
+        print("Starting")
+         #always initialize trademanagement and riskmanagement
+        # self.trade_management_strategy = PriceDeltaTradeManagement(self.price_delta)
+        # self.risk_management_strategy = EqualRiskManagement(initial_risk_per_trade=self.initial_risk_per_trade, initial_capital=self._broker._cash)
+        # self.total_trades = len(self.closed_trades)
 
     def next(self):
         signal = self.data.signal[-1]
@@ -181,10 +188,10 @@ class FlawlessVictoryDCA(Strategy):
 
 
 minute_data = load_data(data_path)
-daily_data = calculate_daily_indicators(minute_data)
+daily_data = calculate_daily_indicators(EURUSD)
 daily_signals = generate_signals(daily_data)
 bt = Backtest(daily_signals ,FlawlessVictoryDCA, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 bt.plot(superimpose=False)
-#bt.tear_sheet()
+bt.tear_sheet()

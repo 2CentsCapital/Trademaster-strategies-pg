@@ -7,8 +7,11 @@ sys.path.insert(0, parent_dir)
 from TradeMaster.backtesting import Backtest, Strategy
 from TradeMaster.lib import crossover
 import pandas_ta as ta
-
+from TradeMaster.test import EURUSD
 import pandas_ta as ta
+# from TradeMaster.risk_management.equal_weigh_rm import EqualRiskManagement
+# from TradeMaster.trade_management.atr_tm import ATR_RR_TradeManagement
+# from TradeMaster.trade_management.price_delta import PriceDeltaTradeManagement
 
 
 
@@ -89,7 +92,10 @@ def generate_signals(df):
 
 class BollingerBandsStochasticRSI(Strategy):
     def init(self):
-        # Initializing indicators here if needed
+           #always initialize trademanagement and riskmanagement
+        # self.trade_management_strategy = PriceDeltaTradeManagement(self.price_delta)
+        # self.risk_management_strategy = EqualRiskManagement(initial_risk_per_trade=self.initial_risk_per_trade, initial_capital=self._broker._cash)
+        # self.total_trades = len(self.closed_trades)
         pass
 
     def next(self):
@@ -134,10 +140,11 @@ class BollingerBandsStochasticRSI(Strategy):
 
 
 data = load_data(data_path)
-data= calculate_daily_indicators(data)
+data= calculate_daily_indicators(EURUSD)
 data = generate_signals(data)
 bt = Backtest(data, BollingerBandsStochasticRSI, cash=100000, commission=.002, exclusive_orders=True)
 stats = bt.run()
 print(stats)
 
 bt.plot(superimpose=False)
+bt.tear_sheet()
